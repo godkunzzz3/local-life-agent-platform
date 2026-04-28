@@ -1,8 +1,10 @@
 package com.hmdp.service.impl;
 
+import com.hmdp.dto.MerchantCampaignDraftRequest;
 import com.hmdp.dto.Result;
 import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.AgentActionLog;
+import com.hmdp.entity.AgentCampaignDraft;
 import com.hmdp.entity.AgentMessage;
 import com.hmdp.entity.AgentSession;
 import com.hmdp.entity.AgentSuggestion;
@@ -21,6 +23,7 @@ import com.hmdp.service.IMerchantAgentActionLogService;
 import com.hmdp.service.IMerchantAgentMessageService;
 import com.hmdp.service.IMerchantAgentSessionService;
 import com.hmdp.service.IMerchantAgentSuggestionService;
+import com.hmdp.service.IMerchantCampaignDraftService;
 import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IShopService;
 import com.hmdp.service.IVoucherOrderService;
@@ -70,6 +73,8 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     private IMerchantAgentMessageService agentMessageService;
     @Resource
     private IMerchantAgentSuggestionService agentSuggestionService;
+    @Resource
+    private IMerchantCampaignDraftService campaignDraftService;
     @Resource
     private IMerchantAgentActionLogService agentActionLogService;
     @Resource
@@ -136,6 +141,203 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         return Result.ok(report);
     }
 
+    @Override
+    public Result queryShopSessions(Long shopId) {
+        if (shopId == null) {
+            return Result.fail("店铺id不能为空");
+        }
+        if (shopService.getById(shopId) == null) {
+            return Result.fail("店铺不存在");
+        }
+
+        List<AgentSession> sessions = agentSessionService.query()
+                .eq("shop_id", shopId)
+                .orderByDesc("create_time")
+                .last("LIMIT 50")
+                .list();
+        if (sessions.isEmpty()) {
+            return Result.ok(Collections.emptyList());
+        }
+
+        List<Long> sessionIds = sessions.stream().map(AgentSession::getId).collect(Collectors.toList());
+        Map<Long, Integer> messageCountMap = countMessagesBySession(sessionIds);
+        Map<Long, AgentSuggestion> latestSuggestionMap = queryLatestSuggestionBySession(sessionIds);
+
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (AgentSession session : sessions) {
+            AgentSuggestion suggestion = latestSuggestionMap.get(session.getId());
+            Map<String, Object> row = new LinkedHashMap<>();
+            // 雪花 ID 超过 JS 安全整数范围，面向前端的 id 一律补充字符串字段。
+            row.put("id", session.getId());
+            row.put("sessionId", String.valueOf(session.getId()));
+            row.put("shopId", session.getShopId());
+            row.put("merchantId", String.valueOf(session.getMerchantId()));
+            row.put("title", session.getTitle());
+            row.put("scene", session.getScene());
+            row.put("sceneName", resolveSceneName(session.getScene()));
+            row.put("status", session.getStatus());
+            row.put("statusName", resolveSessionStatusName(session.getStatus()));
+            row.put("messageCount", messageCountMap.getOrDefault(session.getId(), 0));
+            row.put("latestSuggestion", suggestion == null ? "" : suggestion.getSummary());
+            row.put("createTime", session.getCreateTime());
+            row.put("updateTime", session.getUpdateTime());
+            result.add(row);
+        }
+        return Result.ok(result);
+    }
+
+    @Override
+    public Result querySessionMessages(Long sessionId) {
+        if (sessionId == null) {
+            return Result.fail("会话id不能为空");
+        }
+        AgentSession session = agentSessionService.getById(sessionId);
+        if (session == null) {
+            return Result.fail("会话不存在");
+        }
+
+        List<AgentMessage> messages = agentMessageService.query()
+                .eq("session_id", sessionId)
+                .orderByAsc("create_time")
+                .list();
+
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (AgentMessage message : messages) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", message.getId());
+            row.put("messageId", String.valueOf(message.getId()));
+            row.put("sessionId", String.valueOf(message.getSessionId()));
+            row.put("shopId", message.getShopId());
+            row.put("role", message.getRole());
+            row.put("content", message.getContent());
+            row.put("toolName", message.getToolName());
+            row.put("toolArgs", message.getToolArgs());
+            row.put("toolResult", message.getToolResult());
+            row.put("createTime", message.getCreateTime());
+            result.add(row);
+        }
+        return Result.ok(result);
+    }
+
+    @Override
+    public Result queryShopSuggestions(Long shopId) {
+        if (shopId == null) {
+            return Result.fail("店铺id不能为空");
+        }
+        if (shopService.getById(shopId) == null) {
+            return Result.fail("店铺不存在");
+        }
+
+        List<AgentSuggestion> suggestions = agentSuggestionService.query()
+                .eq("shop_id", shopId)
+                .orderByDesc("create_time")
+                .last("LIMIT 50")
+                .list();
+
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (AgentSuggestion suggestion : suggestions) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", suggestion.getId());
+            row.put("suggestionId", String.valueOf(suggestion.getId()));
+            row.put("sessionId", String.valueOf(suggestion.getSessionId()));
+            row.put("shopId", suggestion.getShopId());
+            row.put("type", suggestion.getSuggestionType());
+            row.put("typeName", resolveSuggestionTypeName(suggestion.getSuggestionType()));
+            row.put("title", suggestion.getTitle());
+            row.put("summary", suggestion.getSummary());
+            row.put("content", suggestion.getContent());
+            row.put("confidenceScore", suggestion.getConfidenceScore());
+            row.put("riskLevel", suggestion.getRiskLevel());
+            row.put("riskLevelName", resolveRiskLevelName(suggestion.getRiskLevel()));
+            row.put("status", suggestion.getStatus());
+            row.put("statusName", resolveSuggestionStatusName(suggestion.getStatus()));
+            row.put("createTime", suggestion.getCreateTime());
+            row.put("updateTime", suggestion.getUpdateTime());
+            result.add(row);
+        }
+        return Result.ok(result);
+    }
+
+    @Override
+    @Transactional
+    public Result createCampaignDraft(Long suggestionId, MerchantCampaignDraftRequest request) {
+        if (suggestionId == null) {
+            return Result.fail("建议id不能为空");
+        }
+        AgentSuggestion suggestion = agentSuggestionService.getById(suggestionId);
+        if (suggestion == null) {
+            return Result.fail("Agent建议不存在");
+        }
+        if (suggestion.getStatus() != null && suggestion.getStatus() == 4) {
+            return Result.fail("该建议已经执行，不能重复生成草稿");
+        }
+        Shop shop = shopService.getById(suggestion.getShopId());
+        if (shop == null) {
+            return Result.fail("店铺不存在");
+        }
+
+        AgentCampaignDraft draft = buildCampaignDraft(suggestion, shop, request);
+        campaignDraftService.save(draft);
+        agentSuggestionService.updateById(new AgentSuggestion()
+                .setId(suggestion.getId())
+                .setStatus(2));
+        recordAction(suggestion.getSessionId(), suggestion.getShopId(), currentMerchantId(),
+                "create_campaign_draft", "draft", draft.getId(), draftToMap(draft));
+        return Result.ok(draftToMap(draft));
+    }
+
+    @Override
+    @Transactional
+    public Result confirmCampaignDraft(Long draftId) {
+        if (draftId == null) {
+            return Result.fail("草稿id不能为空");
+        }
+        AgentCampaignDraft draft = campaignDraftService.getById(draftId);
+        if (draft == null) {
+            return Result.fail("活动草稿不存在");
+        }
+        if (draft.getStatus() != null && draft.getStatus() != 1) {
+            return Result.fail("活动草稿不是待确认状态，不能重复创建");
+        }
+
+        Voucher voucher = new Voucher()
+                .setShopId(draft.getShopId())
+                .setTitle(draft.getTitle())
+                .setSubTitle(draft.getSubTitle())
+                .setRules(draft.getRules())
+                .setPayValue(draft.getPayValue())
+                .setActualValue(draft.getActualValue())
+                .setStatus(1);
+        if ("seckill".equals(draft.getDraftType())) {
+            voucher.setType(1)
+                    .setStock(draft.getStock() == null ? 50 : draft.getStock())
+                    .setBeginTime(draft.getBeginTime())
+                    .setEndTime(draft.getEndTime());
+            voucherService.addSeckillVoucher(voucher);
+        } else {
+            voucher.setType(0);
+            voucherService.save(voucher);
+        }
+
+        campaignDraftService.updateById(new AgentCampaignDraft()
+                .setId(draft.getId())
+                .setStatus(2));
+        draft.setStatus(2);
+        agentSuggestionService.updateById(new AgentSuggestion()
+                .setId(draft.getSuggestionId())
+                .setStatus(4));
+
+        Map<String, Object> result = draftToMap(draft);
+        result.put("voucherId", voucher.getId());
+        result.put("voucherIdText", String.valueOf(voucher.getId()));
+        result.put("message", "活动创建成功");
+        AgentSuggestion suggestion = agentSuggestionService.getById(draft.getSuggestionId());
+        Long sessionId = suggestion == null ? null : suggestion.getSessionId();
+        recordAction(sessionId, draft.getShopId(), currentMerchantId(),
+                "confirm_campaign_draft", "voucher", voucher.getId(), result);
+        return Result.ok(result);
+    }
+
     private List<VoucherOrder> queryOrders(List<Long> voucherIds, LocalDateTime startTime) {
         if (voucherIds.isEmpty()) {
             return Collections.emptyList();
@@ -144,6 +346,115 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
                 .in("voucher_id", voucherIds)
                 .ge("create_time", startTime)
                 .list();
+    }
+
+    private Map<Long, Integer> countMessagesBySession(List<Long> sessionIds) {
+        Map<Long, Integer> result = new HashMap<>();
+        List<AgentMessage> messages = agentMessageService.query()
+                .in("session_id", sessionIds)
+                .list();
+        for (AgentMessage message : messages) {
+            result.put(message.getSessionId(), result.getOrDefault(message.getSessionId(), 0) + 1);
+        }
+        return result;
+    }
+
+    private Map<Long, AgentSuggestion> queryLatestSuggestionBySession(List<Long> sessionIds) {
+        Map<Long, AgentSuggestion> result = new HashMap<>();
+        List<AgentSuggestion> suggestions = agentSuggestionService.query()
+                .in("session_id", sessionIds)
+                .orderByDesc("create_time")
+                .list();
+        for (AgentSuggestion suggestion : suggestions) {
+            // 查询结果已经按创建时间倒序排列，第一次出现的就是该会话最新建议。
+            result.putIfAbsent(suggestion.getSessionId(), suggestion);
+        }
+        return result;
+    }
+
+    private AgentCampaignDraft buildCampaignDraft(AgentSuggestion suggestion, Shop shop, MerchantCampaignDraftRequest request) {
+        String draftType = normalizeDraftType(request == null ? null : request.getDraftType());
+        LocalDateTime beginTime = request != null && request.getBeginTime() != null
+                ? request.getBeginTime()
+                : LocalDateTime.now().plusDays(1).withHour(18).withMinute(0).withSecond(0).withNano(0);
+        LocalDateTime endTime = request != null && request.getEndTime() != null
+                ? request.getEndTime()
+                : beginTime.plusDays("seckill".equals(draftType) ? 2 : 30);
+
+        long defaultActualValue = resolveDefaultActualValue(shop);
+        long defaultPayValue = "seckill".equals(draftType)
+                ? Math.max(100L, Math.round(defaultActualValue * 0.59))
+                : Math.max(100L, Math.round(defaultActualValue * 0.80));
+        String typeName = "seckill".equals(draftType) ? "秒杀券" : "代金券";
+
+        return new AgentCampaignDraft()
+                .setId(nextAgentId())
+                .setSuggestionId(suggestion.getId())
+                .setShopId(suggestion.getShopId())
+                .setDraftType(draftType)
+                .setTitle(firstNotBlank(request == null ? null : request.getTitle(), shop.getName() + typeName))
+                .setSubTitle(firstNotBlank(request == null ? null : request.getSubTitle(), "Agent推荐活动，适合短期验证转化"))
+                .setPayValue(request != null && request.getPayValue() != null ? request.getPayValue() : defaultPayValue)
+                .setActualValue(request != null && request.getActualValue() != null ? request.getActualValue() : defaultActualValue)
+                .setStock(request != null && request.getStock() != null ? request.getStock() : ("seckill".equals(draftType) ? 80 : null))
+                .setBeginTime(beginTime)
+                .setEndTime(endTime)
+                .setRules(firstNotBlank(request == null ? null : request.getRules(), buildDefaultRules(draftType)))
+                .setReason(firstNotBlank(suggestion.getSummary(), suggestion.getContent()))
+                .setStatus(1);
+    }
+
+    private String normalizeDraftType(String draftType) {
+        if ("voucher".equalsIgnoreCase(draftType)) {
+            return "voucher";
+        }
+        return "seckill";
+    }
+
+    private long resolveDefaultActualValue(Shop shop) {
+        Long avgPrice = shop.getAvgPrice();
+        if (avgPrice == null || avgPrice <= 0) {
+            return 10000L;
+        }
+        // 店铺均价字段按“元”保存，优惠券金额字段按“分”保存。
+        long avgPriceFen = avgPrice * 100;
+        long rounded = Math.round(avgPriceFen / 1000.0) * 1000L;
+        return Math.max(3000L, rounded);
+    }
+
+    private String buildDefaultRules(String draftType) {
+        if ("seckill".equals(draftType)) {
+            return "{\"limitPerUser\":1,\"verify\":\"到店出示券码核销\",\"source\":\"agent\"}";
+        }
+        return "{\"verify\":\"到店出示券码核销\",\"source\":\"agent\"}";
+    }
+
+    private String firstNotBlank(String first, String fallback) {
+        return first == null || first.trim().isEmpty() ? fallback : first.trim();
+    }
+
+    private Map<String, Object> draftToMap(AgentCampaignDraft draft) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("id", draft.getId());
+        row.put("draftId", String.valueOf(draft.getId()));
+        row.put("suggestionId", String.valueOf(draft.getSuggestionId()));
+        row.put("shopId", draft.getShopId());
+        row.put("draftType", draft.getDraftType());
+        row.put("draftTypeName", "seckill".equals(draft.getDraftType()) ? "秒杀券草稿" : "普通代金券草稿");
+        row.put("title", draft.getTitle());
+        row.put("subTitle", draft.getSubTitle());
+        row.put("payValue", draft.getPayValue());
+        row.put("actualValue", draft.getActualValue());
+        row.put("stock", draft.getStock());
+        row.put("beginTime", draft.getBeginTime());
+        row.put("endTime", draft.getEndTime());
+        row.put("rules", draft.getRules());
+        row.put("reason", draft.getReason());
+        row.put("status", draft.getStatus());
+        row.put("statusName", resolveDraftStatusName(draft.getStatus()));
+        row.put("createTime", draft.getCreateTime());
+        row.put("updateTime", draft.getUpdateTime());
+        return row;
     }
 
     private List<SeckillVoucher> querySeckillVouchers(List<Long> voucherIds) {
@@ -406,6 +717,103 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
             return "中";
         }
         return "低";
+    }
+
+    private String resolveSceneName(String scene) {
+        if ("operation_report".equals(scene)) {
+            return "运营报告";
+        }
+        if ("voucher_plan".equals(scene)) {
+            return "优惠券方案";
+        }
+        if ("review_reply".equals(scene)) {
+            return "评价回复";
+        }
+        return "未知场景";
+    }
+
+    private String resolveSessionStatusName(Integer status) {
+        if (status == null) {
+            return "未知状态";
+        }
+        switch (status) {
+            case 1:
+                return "进行中";
+            case 2:
+                return "已完成";
+            case 3:
+                return "已关闭";
+            default:
+                return "未知状态";
+        }
+    }
+
+    private String resolveSuggestionTypeName(String type) {
+        if ("voucher".equals(type)) {
+            return "普通券建议";
+        }
+        if ("seckill".equals(type)) {
+            return "秒杀券建议";
+        }
+        if ("review".equals(type)) {
+            return "评价建议";
+        }
+        if ("operation".equals(type)) {
+            return "运营建议";
+        }
+        return "未知建议";
+    }
+
+    private String resolveRiskLevelName(Integer riskLevel) {
+        if (riskLevel == null) {
+            return "未知风险";
+        }
+        switch (riskLevel) {
+            case 1:
+                return "低风险";
+            case 2:
+                return "中风险";
+            case 3:
+                return "高风险";
+            default:
+                return "未知风险";
+        }
+    }
+
+    private String resolveSuggestionStatusName(Integer status) {
+        if (status == null) {
+            return "未知状态";
+        }
+        switch (status) {
+            case 1:
+                return "待确认";
+            case 2:
+                return "已采纳";
+            case 3:
+                return "已拒绝";
+            case 4:
+                return "已执行";
+            default:
+                return "未知状态";
+        }
+    }
+
+    private String resolveDraftStatusName(Integer status) {
+        if (status == null) {
+            return "未知状态";
+        }
+        switch (status) {
+            case 1:
+                return "待确认";
+            case 2:
+                return "已创建";
+            case 3:
+                return "已拒绝";
+            case 4:
+                return "已过期";
+            default:
+                return "未知状态";
+        }
     }
 
     private long safeLong(Long value) {

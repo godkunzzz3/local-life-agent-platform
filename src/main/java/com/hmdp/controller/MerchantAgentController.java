@@ -1,13 +1,10 @@
 package com.hmdp.controller;
 
 import com.hmdp.dto.MerchantOperationReportRequest;
+import com.hmdp.dto.MerchantCampaignDraftRequest;
 import com.hmdp.dto.Result;
 import com.hmdp.service.IMerchantAgentFacadeService;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 import javax.annotation.Resource;
 
@@ -36,4 +33,46 @@ public class MerchantAgentController {
         String dateRange = request == null ? null : request.getDateRange();
         return merchantAgentFacadeService.generateOperationReport(shopId, dateRange);
     }
+    /**
+     * 查询店铺 Agent 会话列表
+     */
+    @GetMapping("/shops/{shopId}/sessions")
+    public Result getSessionList(@PathVariable("shopId") Long shopId) {
+        return merchantAgentFacadeService.queryShopSessions(shopId);
+    }
+
+    /**
+     * 查询店铺 Agent 会话消息
+     */
+    @GetMapping("/sessions/{sessionId}/messages")
+    public Result getSessionMessage(@PathVariable("sessionId") Long sessionId) {
+        return merchantAgentFacadeService.querySessionMessages(sessionId);
+    }
+
+    /**
+     * 查询店铺 Agent 建议
+     */
+    @GetMapping("/shops/{shopId}/suggestions")
+    public Result getShopAgentSuggestion(@PathVariable("shopId") Long shopId) {
+        return merchantAgentFacadeService.queryShopSuggestions(shopId);
+    }
+    /**
+     * 生成优惠券、秒杀券草稿
+     */
+    @PostMapping("/suggestions/{suggestionId}/drafts")
+    public Result generateCampaignDraft(@PathVariable("suggestionId") Long suggestionId,
+                                        @RequestBody(required = false) MerchantCampaignDraftRequest request) {
+        return merchantAgentFacadeService.createCampaignDraft(suggestionId, request);
+    }
+
+    /**
+     * 商家确认活动草稿后，创建真实优惠券。
+     *
+     * <p>这是 Agent 模块的关键权限边界：Agent 只能生成草稿，只有商家确认后才允许写入真实业务表。</p>
+     */
+    @PostMapping("/drafts/{draftId}/confirm")
+    public Result confirmCampaignDraft(@PathVariable("draftId") Long draftId) {
+        return merchantAgentFacadeService.confirmCampaignDraft(draftId);
+    }
+
 }
