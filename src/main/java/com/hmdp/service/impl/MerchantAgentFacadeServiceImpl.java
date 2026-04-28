@@ -16,8 +16,6 @@ import com.hmdp.entity.Voucher;
 import com.hmdp.entity.VoucherOrder;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.hmdp.service.IBlogCommentsService;
-import com.hmdp.service.IBlogService;
 import com.hmdp.service.IMerchantAgentFacadeService;
 import com.hmdp.service.IMerchantAgentActionLogService;
 import com.hmdp.service.IMerchantAgentMessageService;
@@ -25,10 +23,10 @@ import com.hmdp.service.IMerchantAgentSessionService;
 import com.hmdp.service.IMerchantAgentSuggestionService;
 import com.hmdp.service.IMerchantCampaignDraftService;
 import com.hmdp.service.IMerchantService;
-import com.hmdp.service.ISeckillVoucherService;
-import com.hmdp.service.IShopService;
-import com.hmdp.service.IVoucherOrderService;
-import com.hmdp.service.IVoucherService;
+import com.hmdp.tool.OrderAgentTool;
+import com.hmdp.tool.ReviewAgentTool;
+import com.hmdp.tool.ShopAgentTool;
+import com.hmdp.tool.VoucherAgentTool;
 import com.hmdp.utils.RedisIdWorker;
 import com.hmdp.utils.UserHolder;
 import org.springframework.stereotype.Service;
@@ -36,7 +34,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -57,17 +54,13 @@ import java.util.stream.Collectors;
 public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeService {
 
     @Resource
-    private IShopService shopService;
+    private ShopAgentTool shopAgentTool;
     @Resource
-    private IVoucherService voucherService;
+    private OrderAgentTool orderAgentTool;
     @Resource
-    private ISeckillVoucherService seckillVoucherService;
+    private VoucherAgentTool voucherAgentTool;
     @Resource
-    private IVoucherOrderService voucherOrderService;
-    @Resource
-    private IBlogService blogService;
-    @Resource
-    private IBlogCommentsService blogCommentsService;
+    private ReviewAgentTool reviewAgentTool;
     @Resource
     private IMerchantAgentSessionService agentSessionService;
     @Resource
@@ -91,7 +84,7 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         if (shopId == null) {
             return Result.fail("店铺id不能为空");
         }
-        Shop shop = shopService.getById(shopId);
+        Shop shop = shopAgentTool.getShop(shopId);
         if (shop == null) {
             return Result.fail("店铺不存在");
         }
@@ -100,18 +93,18 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         }
 
         DateRange range = resolveDateRange(dateRange);
-        List<Voucher> vouchers = voucherService.query().eq("shop_id", shopId).list();
+        List<Voucher> vouchers = voucherAgentTool.queryShopVouchers(shopId);
         List<Long> voucherIds = vouchers.stream().map(Voucher::getId).collect(Collectors.toList());
-        List<VoucherOrder> orders = queryOrders(voucherIds, range.getStartTime());
+        List<VoucherOrder> orders = orderAgentTool.queryOrders(voucherIds, range.getStartTime());
         Map<Long, Voucher> voucherMap = vouchers.stream().collect(Collectors.toMap(Voucher::getId, voucher -> voucher));
-        List<SeckillVoucher> seckillVouchers = querySeckillVouchers(voucherIds);
-        List<Blog> blogs = blogService.query().eq("shop_id", shopId).orderByDesc("create_time").list();
-        List<BlogComments> comments = queryComments(blogs);
+        List<SeckillVoucher> seckillVouchers = voucherAgentTool.querySeckillVouchers(voucherIds);
+        List<Blog> blogs = reviewAgentTool.queryShopBlogs(shopId);
+        List<BlogComments> comments = reviewAgentTool.queryComments(blogs);
 
-        Map<String, Object> shopProfile = buildShopProfile(shop);
-        Map<String, Object> orderAnalysis = buildOrderAnalysis(orders, voucherMap);
-        Map<String, Object> voucherAnalysis = buildVoucherAnalysis(vouchers, seckillVouchers);
-        Map<String, Object> reviewAnalysis = buildReviewAnalysis(blogs, comments);
+        Map<String, Object> shopProfile = shopAgentTool.buildShopProfile(shop);
+        Map<String, Object> orderAnalysis = orderAgentTool.buildOrderAnalysis(orders, voucherMap);
+        Map<String, Object> voucherAnalysis = voucherAgentTool.buildVoucherAnalysis(vouchers, seckillVouchers);
+        Map<String, Object> reviewAnalysis = reviewAgentTool.buildReviewAnalysis(blogs, comments);
         List<String> recommendations = buildRecommendations(shop, orders, vouchers, seckillVouchers, blogs, comments);
         String summary = buildSummary(shop, range, orderAnalysis, voucherAnalysis, reviewAnalysis, recommendations);
 
@@ -152,7 +145,7 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         if (shopId == null) {
             return Result.fail("店铺id不能为空");
         }
-        if (shopService.getById(shopId) == null) {
+        if (shopAgentTool.getShop(shopId) == null) {
             return Result.fail("店铺不存在");
         }
         if (!merchantService.hasCurrentUserShopPermission(shopId)) {
@@ -236,7 +229,7 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         if (shopId == null) {
             return Result.fail("店铺id不能为空");
         }
-        if (shopService.getById(shopId) == null) {
+        if (shopAgentTool.getShop(shopId) == null) {
             return Result.fail("店铺不存在");
         }
         if (!merchantService.hasCurrentUserShopPermission(shopId)) {
@@ -286,7 +279,7 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         if (suggestion.getStatus() != null && suggestion.getStatus() == 4) {
             return Result.fail("该建议已经执行，不能重复生成草稿");
         }
-        Shop shop = shopService.getById(suggestion.getShopId());
+        Shop shop = shopAgentTool.getShop(suggestion.getShopId());
         if (shop == null) {
             return Result.fail("店铺不存在");
         }
@@ -294,14 +287,14 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
             return Result.fail("无权管理该店铺");
         }
 
-        AgentCampaignDraft draft = buildCampaignDraft(suggestion, shop, request);
+        AgentCampaignDraft draft = voucherAgentTool.buildCampaignDraft(suggestion, shop, request, nextAgentId());
         campaignDraftService.save(draft);
         agentSuggestionService.updateById(new AgentSuggestion()
                 .setId(suggestion.getId())
                 .setStatus(2));
         recordAction(suggestion.getSessionId(), suggestion.getShopId(), currentMerchantId(),
-                "create_campaign_draft", "draft", draft.getId(), draftToMap(draft));
-        return Result.ok(draftToMap(draft));
+                "create_campaign_draft", "draft", draft.getId(), voucherAgentTool.draftToMap(draft));
+        return Result.ok(voucherAgentTool.draftToMap(draft));
     }
 
     @Override
@@ -321,24 +314,7 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
             return Result.fail("无权管理该店铺");
         }
 
-        Voucher voucher = new Voucher()
-                .setShopId(draft.getShopId())
-                .setTitle(draft.getTitle())
-                .setSubTitle(draft.getSubTitle())
-                .setRules(draft.getRules())
-                .setPayValue(draft.getPayValue())
-                .setActualValue(draft.getActualValue())
-                .setStatus(1);
-        if ("seckill".equals(draft.getDraftType())) {
-            voucher.setType(1)
-                    .setStock(draft.getStock() == null ? 50 : draft.getStock())
-                    .setBeginTime(draft.getBeginTime())
-                    .setEndTime(draft.getEndTime());
-            voucherService.addSeckillVoucher(voucher);
-        } else {
-            voucher.setType(0);
-            voucherService.save(voucher);
-        }
+        Voucher voucher = voucherAgentTool.createVoucherFromDraft(draft);
 
         campaignDraftService.updateById(new AgentCampaignDraft()
                 .setId(draft.getId())
@@ -348,7 +324,7 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
                 .setId(draft.getSuggestionId())
                 .setStatus(4));
 
-        Map<String, Object> result = draftToMap(draft);
+        Map<String, Object> result = voucherAgentTool.draftToMap(draft);
         result.put("voucherId", voucher.getId());
         result.put("voucherIdText", String.valueOf(voucher.getId()));
         result.put("message", "活动创建成功");
@@ -357,16 +333,6 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         recordAction(sessionId, draft.getShopId(), currentMerchantId(),
                 "confirm_campaign_draft", "voucher", voucher.getId(), result);
         return Result.ok(result);
-    }
-
-    private List<VoucherOrder> queryOrders(List<Long> voucherIds, LocalDateTime startTime) {
-        if (voucherIds.isEmpty()) {
-            return Collections.emptyList();
-        }
-        return voucherOrderService.query()
-                .in("voucher_id", voucherIds)
-                .ge("create_time", startTime)
-                .list();
     }
 
     private Map<Long, Integer> countMessagesBySession(List<Long> sessionIds) {
@@ -390,221 +356,6 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
             // 查询结果已经按创建时间倒序排列，第一次出现的就是该会话最新建议。
             result.putIfAbsent(suggestion.getSessionId(), suggestion);
         }
-        return result;
-    }
-
-    private AgentCampaignDraft buildCampaignDraft(AgentSuggestion suggestion, Shop shop, MerchantCampaignDraftRequest request) {
-        String draftType = normalizeDraftType(request == null ? null : request.getDraftType());
-        LocalDateTime beginTime = request != null && request.getBeginTime() != null
-                ? request.getBeginTime()
-                : LocalDateTime.now().plusDays(1).withHour(18).withMinute(0).withSecond(0).withNano(0);
-        LocalDateTime endTime = request != null && request.getEndTime() != null
-                ? request.getEndTime()
-                : beginTime.plusDays("seckill".equals(draftType) ? 2 : 30);
-
-        long defaultActualValue = resolveDefaultActualValue(shop);
-        long defaultPayValue = "seckill".equals(draftType)
-                ? Math.max(100L, Math.round(defaultActualValue * 0.59))
-                : Math.max(100L, Math.round(defaultActualValue * 0.80));
-        String typeName = "seckill".equals(draftType) ? "秒杀券" : "代金券";
-
-        return new AgentCampaignDraft()
-                .setId(nextAgentId())
-                .setSuggestionId(suggestion.getId())
-                .setShopId(suggestion.getShopId())
-                .setDraftType(draftType)
-                .setTitle(firstNotBlank(request == null ? null : request.getTitle(), shop.getName() + typeName))
-                .setSubTitle(firstNotBlank(request == null ? null : request.getSubTitle(), "Agent推荐活动，适合短期验证转化"))
-                .setPayValue(request != null && request.getPayValue() != null ? request.getPayValue() : defaultPayValue)
-                .setActualValue(request != null && request.getActualValue() != null ? request.getActualValue() : defaultActualValue)
-                .setStock(request != null && request.getStock() != null ? request.getStock() : ("seckill".equals(draftType) ? 80 : null))
-                .setBeginTime(beginTime)
-                .setEndTime(endTime)
-                .setRules(firstNotBlank(request == null ? null : request.getRules(), buildDefaultRules(draftType)))
-                .setReason(firstNotBlank(suggestion.getSummary(), suggestion.getContent()))
-                .setStatus(1);
-    }
-
-    private String normalizeDraftType(String draftType) {
-        if ("voucher".equalsIgnoreCase(draftType)) {
-            return "voucher";
-        }
-        return "seckill";
-    }
-
-    private long resolveDefaultActualValue(Shop shop) {
-        Long avgPrice = shop.getAvgPrice();
-        if (avgPrice == null || avgPrice <= 0) {
-            return 10000L;
-        }
-        // 店铺均价字段按“元”保存，优惠券金额字段按“分”保存。
-        long avgPriceFen = avgPrice * 100;
-        long rounded = Math.round(avgPriceFen / 1000.0) * 1000L;
-        return Math.max(3000L, rounded);
-    }
-
-    private String buildDefaultRules(String draftType) {
-        if ("seckill".equals(draftType)) {
-            return "{\"limitPerUser\":1,\"verify\":\"到店出示券码核销\",\"source\":\"agent\"}";
-        }
-        return "{\"verify\":\"到店出示券码核销\",\"source\":\"agent\"}";
-    }
-
-    private String firstNotBlank(String first, String fallback) {
-        return first == null || first.trim().isEmpty() ? fallback : first.trim();
-    }
-
-    private Map<String, Object> draftToMap(AgentCampaignDraft draft) {
-        Map<String, Object> row = new LinkedHashMap<>();
-        row.put("id", draft.getId());
-        row.put("draftId", String.valueOf(draft.getId()));
-        row.put("suggestionId", String.valueOf(draft.getSuggestionId()));
-        row.put("shopId", draft.getShopId());
-        row.put("draftType", draft.getDraftType());
-        row.put("draftTypeName", "seckill".equals(draft.getDraftType()) ? "秒杀券草稿" : "普通代金券草稿");
-        row.put("title", draft.getTitle());
-        row.put("subTitle", draft.getSubTitle());
-        row.put("payValue", draft.getPayValue());
-        row.put("actualValue", draft.getActualValue());
-        row.put("stock", draft.getStock());
-        row.put("beginTime", draft.getBeginTime());
-        row.put("endTime", draft.getEndTime());
-        row.put("rules", draft.getRules());
-        row.put("reason", draft.getReason());
-        row.put("status", draft.getStatus());
-        row.put("statusName", resolveDraftStatusName(draft.getStatus()));
-        row.put("createTime", draft.getCreateTime());
-        row.put("updateTime", draft.getUpdateTime());
-        return row;
-    }
-
-    private List<SeckillVoucher> querySeckillVouchers(List<Long> voucherIds) {
-        if (voucherIds.isEmpty()) {
-            return Collections.emptyList();
-        }
-        return seckillVoucherService.query().in("voucher_id", voucherIds).list();
-    }
-
-    private List<BlogComments> queryComments(List<Blog> blogs) {
-        if (blogs.isEmpty()) {
-            return Collections.emptyList();
-        }
-        List<Long> blogIds = blogs.stream().map(Blog::getId).collect(Collectors.toList());
-        return blogCommentsService.query()
-                .in("blog_id", blogIds)
-                .eq("status", 0)
-                .orderByDesc("create_time")
-                .list();
-    }
-
-    private Map<String, Object> buildShopProfile(Shop shop) {
-        Map<String, Object> profile = new LinkedHashMap<>();
-        profile.put("name", shop.getName());
-        profile.put("typeId", shop.getTypeId());
-        profile.put("area", shop.getArea());
-        profile.put("address", shop.getAddress());
-        profile.put("avgPrice", shop.getAvgPrice());
-        profile.put("score", shop.getScore());
-        profile.put("sold", shop.getSold());
-        profile.put("comments", shop.getComments());
-        profile.put("openHours", shop.getOpenHours());
-        return profile;
-    }
-
-    private Map<String, Object> buildOrderAnalysis(List<VoucherOrder> orders, Map<Long, Voucher> voucherMap) {
-        int total = orders.size();
-        int paid = 0;
-        int used = 0;
-        int pending = 0;
-        int refunded = 0;
-        long revenue = 0L;
-        long discount = 0L;
-        Map<Long, Integer> voucherOrderCount = new HashMap<>();
-
-        for (VoucherOrder order : orders) {
-            Integer status = order.getStatus();
-            if (status != null && status == 1) {
-                pending++;
-            }
-            if (status != null && status == 3) {
-                used++;
-            }
-            if (status != null && (status == 5 || status == 6)) {
-                refunded++;
-            }
-            if (status != null && (status == 2 || status == 3)) {
-                paid++;
-                Voucher voucher = voucherMap.get(order.getVoucherId());
-                if (voucher != null) {
-                    revenue += safeLong(voucher.getPayValue());
-                    discount += Math.max(0L, safeLong(voucher.getActualValue()) - safeLong(voucher.getPayValue()));
-                }
-            }
-            voucherOrderCount.put(order.getVoucherId(), voucherOrderCount.getOrDefault(order.getVoucherId(), 0) + 1);
-        }
-
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("totalOrders", total);
-        result.put("paidOrders", paid);
-        result.put("usedOrders", used);
-        result.put("pendingOrders", pending);
-        result.put("refundedOrders", refunded);
-        result.put("estimatedRevenue", revenue);
-        result.put("estimatedDiscount", discount);
-        result.put("averageOrderValue", paid == 0 ? 0 : revenue / paid);
-        result.put("conversionRate", total == 0 ? "0.00%" : percent(paid, total));
-        result.put("topVoucher", resolveTopVoucher(voucherOrderCount, voucherMap));
-        return result;
-    }
-
-    private Map<String, Object> buildVoucherAnalysis(List<Voucher> vouchers, List<SeckillVoucher> seckillVouchers) {
-        int normal = 0;
-        int seckill = 0;
-        int online = 0;
-        for (Voucher voucher : vouchers) {
-            if (voucher.getType() != null && voucher.getType() == 1) {
-                seckill++;
-            } else {
-                normal++;
-            }
-            if (voucher.getStatus() != null && voucher.getStatus() == 1) {
-                online++;
-            }
-        }
-
-        int seckillStock = 0;
-        for (SeckillVoucher seckillVoucher : seckillVouchers) {
-            seckillStock += seckillVoucher.getStock() == null ? 0 : seckillVoucher.getStock();
-        }
-
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("totalVouchers", vouchers.size());
-        result.put("onlineVouchers", online);
-        result.put("normalVouchers", normal);
-        result.put("seckillVouchers", seckill);
-        result.put("seckillStock", seckillStock);
-        result.put("hasSeckill", seckill > 0);
-        return result;
-    }
-
-    private Map<String, Object> buildReviewAnalysis(List<Blog> blogs, List<BlogComments> comments) {
-        int liked = 0;
-        int blogCommentCount = 0;
-        List<String> recentContents = new ArrayList<>();
-        for (Blog blog : blogs) {
-            liked += blog.getLiked() == null ? 0 : blog.getLiked();
-            blogCommentCount += blog.getComments() == null ? 0 : blog.getComments();
-            if (recentContents.size() < 3 && blog.getContent() != null) {
-                recentContents.add(trim(blog.getContent(), 60));
-            }
-        }
-
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("blogCount", blogs.size());
-        result.put("likedCount", liked);
-        result.put("commentCount", Math.max(blogCommentCount, comments.size()));
-        result.put("recentContents", recentContents);
-        result.put("engagementLevel", resolveEngagementLevel(blogs.size(), liked, comments.size()));
         return result;
     }
 
@@ -713,33 +464,6 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         return user == null ? 0L : user.getId();
     }
 
-    private String resolveTopVoucher(Map<Long, Integer> voucherOrderCount, Map<Long, Voucher> voucherMap) {
-        Long topVoucherId = null;
-        int topCount = 0;
-        for (Map.Entry<Long, Integer> entry : voucherOrderCount.entrySet()) {
-            if (entry.getValue() > topCount) {
-                topVoucherId = entry.getKey();
-                topCount = entry.getValue();
-            }
-        }
-        if (topVoucherId == null) {
-            return "暂无";
-        }
-        Voucher voucher = voucherMap.get(topVoucherId);
-        return voucher == null ? "未知券" : voucher.getTitle() + "（" + topCount + "单）";
-    }
-
-    private String resolveEngagementLevel(int blogCount, int likedCount, int commentCount) {
-        int score = blogCount * 2 + likedCount + commentCount * 2;
-        if (score >= 30) {
-            return "高";
-        }
-        if (score >= 10) {
-            return "中";
-        }
-        return "低";
-    }
-
     private String resolveSceneName(String scene) {
         if ("operation_report".equals(scene)) {
             return "运营报告";
@@ -817,42 +541,6 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
             default:
                 return "未知状态";
         }
-    }
-
-    private String resolveDraftStatusName(Integer status) {
-        if (status == null) {
-            return "未知状态";
-        }
-        switch (status) {
-            case 1:
-                return "待确认";
-            case 2:
-                return "已创建";
-            case 3:
-                return "已拒绝";
-            case 4:
-                return "已过期";
-            default:
-                return "未知状态";
-        }
-    }
-
-    private long safeLong(Long value) {
-        return value == null ? 0L : value;
-    }
-
-    private String percent(int numerator, int denominator) {
-        return new BigDecimal(numerator)
-                .multiply(new BigDecimal("100"))
-                .divide(new BigDecimal(denominator), 2, RoundingMode.HALF_UP)
-                .toPlainString() + "%";
-    }
-
-    private String trim(String value, int maxLength) {
-        if (value.length() <= maxLength) {
-            return value;
-        }
-        return value.substring(0, maxLength) + "...";
     }
 
     private String toSimpleJson(Map<String, Object> data) {
