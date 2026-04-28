@@ -1,4 +1,475 @@
 package com.hmdp.service.impl;
 
-public class MerchantAgentFacadeServiceImpl {
+import com.hmdp.dto.Result;
+import com.hmdp.dto.UserDTO;
+import com.hmdp.entity.AgentActionLog;
+import com.hmdp.entity.AgentMessage;
+import com.hmdp.entity.AgentSession;
+import com.hmdp.entity.AgentSuggestion;
+import com.hmdp.entity.Blog;
+import com.hmdp.entity.BlogComments;
+import com.hmdp.entity.SeckillVoucher;
+import com.hmdp.entity.Shop;
+import com.hmdp.entity.Voucher;
+import com.hmdp.entity.VoucherOrder;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.hmdp.service.IBlogCommentsService;
+import com.hmdp.service.IBlogService;
+import com.hmdp.service.IMerchantAgentFacadeService;
+import com.hmdp.service.IMerchantAgentActionLogService;
+import com.hmdp.service.IMerchantAgentMessageService;
+import com.hmdp.service.IMerchantAgentSessionService;
+import com.hmdp.service.IMerchantAgentSuggestionService;
+import com.hmdp.service.ISeckillVoucherService;
+import com.hmdp.service.IShopService;
+import com.hmdp.service.IVoucherOrderService;
+import com.hmdp.service.IVoucherService;
+import com.hmdp.utils.RedisIdWorker;
+import com.hmdp.utils.UserHolder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import javax.annotation.Resource;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+/**
+ * 商家运营 Agent 门面服务实现。
+ *
+ * <p>门面层负责跨表业务编排，例如：创建会话、保存用户消息、调用工具、保存建议、
+ * 记录审计日志。当前先注册为 Spring Bean，后续实现运营报告接口时在这里继续扩展。</p>
+ */
+@Service
+public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeService {
+
+    @Resource
+    private IShopService shopService;
+    @Resource
+    private IVoucherService voucherService;
+    @Resource
+    private ISeckillVoucherService seckillVoucherService;
+    @Resource
+    private IVoucherOrderService voucherOrderService;
+    @Resource
+    private IBlogService blogService;
+    @Resource
+    private IBlogCommentsService blogCommentsService;
+    @Resource
+    private IMerchantAgentSessionService agentSessionService;
+    @Resource
+    private IMerchantAgentMessageService agentMessageService;
+    @Resource
+    private IMerchantAgentSuggestionService agentSuggestionService;
+    @Resource
+    private IMerchantAgentActionLogService agentActionLogService;
+    @Resource
+    private RedisIdWorker redisIdWorker;
+    @Resource
+    private ObjectMapper objectMapper;
+
+    @Override
+    @Transactional
+    public Result generateOperationReport(Long shopId, String dateRange) {
+        if (shopId == null) {
+            return Result.fail("店铺id不能为空");
+        }
+        Shop shop = shopService.getById(shopId);
+        if (shop == null) {
+            return Result.fail("店铺不存在");
+        }
+
+        DateRange range = resolveDateRange(dateRange);
+        List<Voucher> vouchers = voucherService.query().eq("shop_id", shopId).list();
+        List<Long> voucherIds = vouchers.stream().map(Voucher::getId).collect(Collectors.toList());
+        List<VoucherOrder> orders = queryOrders(voucherIds, range.getStartTime());
+        Map<Long, Voucher> voucherMap = vouchers.stream().collect(Collectors.toMap(Voucher::getId, voucher -> voucher));
+        List<SeckillVoucher> seckillVouchers = querySeckillVouchers(voucherIds);
+        List<Blog> blogs = blogService.query().eq("shop_id", shopId).orderByDesc("create_time").list();
+        List<BlogComments> comments = queryComments(blogs);
+
+        Map<String, Object> shopProfile = buildShopProfile(shop);
+        Map<String, Object> orderAnalysis = buildOrderAnalysis(orders, voucherMap);
+        Map<String, Object> voucherAnalysis = buildVoucherAnalysis(vouchers, seckillVouchers);
+        Map<String, Object> reviewAnalysis = buildReviewAnalysis(blogs, comments);
+        List<String> recommendations = buildRecommendations(shop, orders, vouchers, seckillVouchers, blogs, comments);
+        String summary = buildSummary(shop, range, orderAnalysis, voucherAnalysis, reviewAnalysis, recommendations);
+
+        Long sessionId = nextAgentId();
+        Long merchantId = currentMerchantId();
+        AgentSession session = new AgentSession()
+                .setId(sessionId)
+                .setShopId(shopId)
+                .setMerchantId(merchantId)
+                .setTitle(shop.getName() + "运营报告")
+                .setScene("operation_report")
+                .setStatus(2);
+        agentSessionService.save(session);
+
+        saveMessage(sessionId, shopId, "user", "生成" + range.getLabel() + "运营报告", null, null, null);
+        Long suggestionId = saveOperationSuggestion(sessionId, shopId, summary, recommendations);
+        Map<String, Object> report = new LinkedHashMap<>();
+        report.put("sessionId", String.valueOf(sessionId));
+        report.put("suggestionId", String.valueOf(suggestionId));
+        report.put("shopId", shopId);
+        report.put("dateRange", range.getCode());
+        report.put("startTime", range.getStartTime());
+        report.put("endTime", range.getEndTime());
+        report.put("summary", summary);
+        report.put("shopProfile", shopProfile);
+        report.put("orderAnalysis", orderAnalysis);
+        report.put("voucherAnalysis", voucherAnalysis);
+        report.put("reviewAnalysis", reviewAnalysis);
+        report.put("recommendations", recommendations);
+
+        saveMessage(sessionId, shopId, "assistant", summary, null, null, toSimpleJson(report));
+        recordAction(sessionId, shopId, merchantId, "generate_operation_report", "suggestion", suggestionId, report);
+        return Result.ok(report);
+    }
+
+    private List<VoucherOrder> queryOrders(List<Long> voucherIds, LocalDateTime startTime) {
+        if (voucherIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return voucherOrderService.query()
+                .in("voucher_id", voucherIds)
+                .ge("create_time", startTime)
+                .list();
+    }
+
+    private List<SeckillVoucher> querySeckillVouchers(List<Long> voucherIds) {
+        if (voucherIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return seckillVoucherService.query().in("voucher_id", voucherIds).list();
+    }
+
+    private List<BlogComments> queryComments(List<Blog> blogs) {
+        if (blogs.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<Long> blogIds = blogs.stream().map(Blog::getId).collect(Collectors.toList());
+        return blogCommentsService.query()
+                .in("blog_id", blogIds)
+                .eq("status", 0)
+                .orderByDesc("create_time")
+                .list();
+    }
+
+    private Map<String, Object> buildShopProfile(Shop shop) {
+        Map<String, Object> profile = new LinkedHashMap<>();
+        profile.put("name", shop.getName());
+        profile.put("typeId", shop.getTypeId());
+        profile.put("area", shop.getArea());
+        profile.put("address", shop.getAddress());
+        profile.put("avgPrice", shop.getAvgPrice());
+        profile.put("score", shop.getScore());
+        profile.put("sold", shop.getSold());
+        profile.put("comments", shop.getComments());
+        profile.put("openHours", shop.getOpenHours());
+        return profile;
+    }
+
+    private Map<String, Object> buildOrderAnalysis(List<VoucherOrder> orders, Map<Long, Voucher> voucherMap) {
+        int total = orders.size();
+        int paid = 0;
+        int used = 0;
+        int pending = 0;
+        int refunded = 0;
+        long revenue = 0L;
+        long discount = 0L;
+        Map<Long, Integer> voucherOrderCount = new HashMap<>();
+
+        for (VoucherOrder order : orders) {
+            Integer status = order.getStatus();
+            if (status != null && status == 1) {
+                pending++;
+            }
+            if (status != null && status == 3) {
+                used++;
+            }
+            if (status != null && (status == 5 || status == 6)) {
+                refunded++;
+            }
+            if (status != null && (status == 2 || status == 3)) {
+                paid++;
+                Voucher voucher = voucherMap.get(order.getVoucherId());
+                if (voucher != null) {
+                    revenue += safeLong(voucher.getPayValue());
+                    discount += Math.max(0L, safeLong(voucher.getActualValue()) - safeLong(voucher.getPayValue()));
+                }
+            }
+            voucherOrderCount.put(order.getVoucherId(), voucherOrderCount.getOrDefault(order.getVoucherId(), 0) + 1);
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("totalOrders", total);
+        result.put("paidOrders", paid);
+        result.put("usedOrders", used);
+        result.put("pendingOrders", pending);
+        result.put("refundedOrders", refunded);
+        result.put("estimatedRevenue", revenue);
+        result.put("estimatedDiscount", discount);
+        result.put("averageOrderValue", paid == 0 ? 0 : revenue / paid);
+        result.put("conversionRate", total == 0 ? "0.00%" : percent(paid, total));
+        result.put("topVoucher", resolveTopVoucher(voucherOrderCount, voucherMap));
+        return result;
+    }
+
+    private Map<String, Object> buildVoucherAnalysis(List<Voucher> vouchers, List<SeckillVoucher> seckillVouchers) {
+        int normal = 0;
+        int seckill = 0;
+        int online = 0;
+        for (Voucher voucher : vouchers) {
+            if (voucher.getType() != null && voucher.getType() == 1) {
+                seckill++;
+            } else {
+                normal++;
+            }
+            if (voucher.getStatus() != null && voucher.getStatus() == 1) {
+                online++;
+            }
+        }
+
+        int seckillStock = 0;
+        for (SeckillVoucher seckillVoucher : seckillVouchers) {
+            seckillStock += seckillVoucher.getStock() == null ? 0 : seckillVoucher.getStock();
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("totalVouchers", vouchers.size());
+        result.put("onlineVouchers", online);
+        result.put("normalVouchers", normal);
+        result.put("seckillVouchers", seckill);
+        result.put("seckillStock", seckillStock);
+        result.put("hasSeckill", seckill > 0);
+        return result;
+    }
+
+    private Map<String, Object> buildReviewAnalysis(List<Blog> blogs, List<BlogComments> comments) {
+        int liked = 0;
+        int blogCommentCount = 0;
+        List<String> recentContents = new ArrayList<>();
+        for (Blog blog : blogs) {
+            liked += blog.getLiked() == null ? 0 : blog.getLiked();
+            blogCommentCount += blog.getComments() == null ? 0 : blog.getComments();
+            if (recentContents.size() < 3 && blog.getContent() != null) {
+                recentContents.add(trim(blog.getContent(), 60));
+            }
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("blogCount", blogs.size());
+        result.put("likedCount", liked);
+        result.put("commentCount", Math.max(blogCommentCount, comments.size()));
+        result.put("recentContents", recentContents);
+        result.put("engagementLevel", resolveEngagementLevel(blogs.size(), liked, comments.size()));
+        return result;
+    }
+
+    private List<String> buildRecommendations(Shop shop, List<VoucherOrder> orders, List<Voucher> vouchers,
+                                              List<SeckillVoucher> seckillVouchers, List<Blog> blogs,
+                                              List<BlogComments> comments) {
+        List<String> recommendations = new ArrayList<>();
+        if (vouchers.isEmpty()) {
+            recommendations.add("当前店铺没有在线优惠券，建议先创建一张低风险普通代金券，用于验证用户转化。");
+        }
+        if (orders.size() < 10) {
+            recommendations.add("近周期券订单量偏少，建议做小库存秒杀券提升曝光，例如晚间或周末时段限量投放。");
+        }
+        if (seckillVouchers.isEmpty()) {
+            recommendations.add("当前缺少秒杀券，可以为高峰时段设计一张限时券，但库存建议先控制在 50-100 张。");
+        }
+        if (blogs.isEmpty()) {
+            recommendations.add("探店内容不足，建议邀请用户发布体验笔记，提升店铺内容可信度。");
+        }
+        if (comments.isEmpty()) {
+            recommendations.add("评论互动数据不足，建议商家主动回复评价，沉淀服务亮点和常见问题。");
+        }
+        if (shop.getScore() != null && shop.getScore() < 40) {
+            recommendations.add("店铺评分偏低，短期不建议大幅降价冲量，应优先处理评价中的服务问题。");
+        }
+        if (recommendations.isEmpty()) {
+            recommendations.add("店铺基础运营数据较完整，建议下一步做复购券或会员专享券，提升老客回访。");
+        }
+        return recommendations;
+    }
+
+    private String buildSummary(Shop shop, DateRange range, Map<String, Object> orderAnalysis,
+                                Map<String, Object> voucherAnalysis, Map<String, Object> reviewAnalysis,
+                                List<String> recommendations) {
+        return shop.getName() + "在" + range.getLabel()
+                + "内产生券订单" + orderAnalysis.get("totalOrders") + "笔，"
+                + "已支付" + orderAnalysis.get("paidOrders") + "笔，"
+                + "当前配置优惠券" + voucherAnalysis.get("totalVouchers") + "张，"
+                + "探店内容" + reviewAnalysis.get("blogCount") + "篇。"
+                + "优先建议：" + recommendations.get(0);
+    }
+
+    private Long saveOperationSuggestion(Long sessionId, Long shopId, String summary, List<String> recommendations) {
+        AgentSuggestion suggestion = new AgentSuggestion()
+                .setId(nextAgentId())
+                .setSessionId(sessionId)
+                .setShopId(shopId)
+                .setSuggestionType("operation")
+                .setTitle("店铺运营报告")
+                .setSummary(summary)
+                .setContent(String.join("\n", recommendations))
+                .setConfidenceScore(new BigDecimal("80.00"))
+                .setRiskLevel(1)
+                .setStatus(1);
+        agentSuggestionService.save(suggestion);
+        return suggestion.getId();
+    }
+
+    private void saveMessage(Long sessionId, Long shopId, String role, String content,
+                             String toolName, String toolArgs, String toolResult) {
+        AgentMessage message = new AgentMessage()
+                .setId(nextAgentId())
+                .setSessionId(sessionId)
+                .setShopId(shopId)
+                .setRole(role)
+                .setContent(content)
+                .setToolName(toolName)
+                .setToolArgs(toolArgs)
+                .setToolResult(toolResult);
+        agentMessageService.save(message);
+    }
+
+    private void recordAction(Long sessionId, Long shopId, Long merchantId, String actionType,
+                              String targetType, Long targetId, Map<String, Object> result) {
+        AgentActionLog actionLog = new AgentActionLog()
+                .setId(nextAgentId())
+                .setSessionId(sessionId)
+                .setShopId(shopId)
+                .setOperatorId(merchantId)
+                .setOperatorType("merchant")
+                .setActionType(actionType)
+                .setTargetType(targetType)
+                .setTargetId(targetId)
+                .setResultData(toSimpleJson(result))
+                .setStatus(1);
+        agentActionLogService.save(actionLog);
+    }
+
+    private DateRange resolveDateRange(String dateRange) {
+        String code = dateRange == null || dateRange.trim().isEmpty() ? "LAST_30_DAYS" : dateRange.trim().toUpperCase();
+        LocalDateTime end = LocalDateTime.now();
+        switch (code) {
+            case "TODAY":
+                return new DateRange("TODAY", "今天", LocalDate.now().atStartOfDay(), end);
+            case "LAST_7_DAYS":
+                return new DateRange("LAST_7_DAYS", "近7天", end.minusDays(7), end);
+            case "LAST_30_DAYS":
+                return new DateRange("LAST_30_DAYS", "近30天", end.minusDays(30), end);
+            default:
+                return new DateRange("LAST_30_DAYS", "近30天", end.minusDays(30), end);
+        }
+    }
+
+    private Long currentMerchantId() {
+        UserDTO user = UserHolder.getUser();
+        return user == null ? 0L : user.getId();
+    }
+
+    private String resolveTopVoucher(Map<Long, Integer> voucherOrderCount, Map<Long, Voucher> voucherMap) {
+        Long topVoucherId = null;
+        int topCount = 0;
+        for (Map.Entry<Long, Integer> entry : voucherOrderCount.entrySet()) {
+            if (entry.getValue() > topCount) {
+                topVoucherId = entry.getKey();
+                topCount = entry.getValue();
+            }
+        }
+        if (topVoucherId == null) {
+            return "暂无";
+        }
+        Voucher voucher = voucherMap.get(topVoucherId);
+        return voucher == null ? "未知券" : voucher.getTitle() + "（" + topCount + "单）";
+    }
+
+    private String resolveEngagementLevel(int blogCount, int likedCount, int commentCount) {
+        int score = blogCount * 2 + likedCount + commentCount * 2;
+        if (score >= 30) {
+            return "高";
+        }
+        if (score >= 10) {
+            return "中";
+        }
+        return "低";
+    }
+
+    private long safeLong(Long value) {
+        return value == null ? 0L : value;
+    }
+
+    private String percent(int numerator, int denominator) {
+        return new BigDecimal(numerator)
+                .multiply(new BigDecimal("100"))
+                .divide(new BigDecimal(denominator), 2, RoundingMode.HALF_UP)
+                .toPlainString() + "%";
+    }
+
+    private String trim(String value, int maxLength) {
+        if (value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, maxLength) + "...";
+    }
+
+    private String toSimpleJson(Map<String, Object> data) {
+        if (data == null) {
+            return "{}";
+        }
+        try {
+            return objectMapper.writeValueAsString(data);
+        } catch (JsonProcessingException e) {
+            return data.toString();
+        }
+    }
+
+    private long nextAgentId() {
+        // Agent 模块涉及会话、消息、建议、草稿、审计多张表。统一使用同一个 keyPrefix，
+        // 可以避免同一秒内不同业务 key 生成相同数值，前端调试和日志追踪会更直观。
+        return redisIdWorker.nextId("agent");
+    }
+
+    private static class DateRange {
+        private final String code;
+        private final String label;
+        private final LocalDateTime startTime;
+        private final LocalDateTime endTime;
+
+        private DateRange(String code, String label, LocalDateTime startTime, LocalDateTime endTime) {
+            this.code = code;
+            this.label = label;
+            this.startTime = startTime;
+            this.endTime = endTime;
+        }
+
+        private String getCode() {
+            return code;
+        }
+
+        private String getLabel() {
+            return label;
+        }
+
+        private LocalDateTime getStartTime() {
+            return startTime;
+        }
+
+        private LocalDateTime getEndTime() {
+            return endTime;
+        }
+    }
 }
