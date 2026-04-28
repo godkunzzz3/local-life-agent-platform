@@ -24,6 +24,7 @@ import com.hmdp.service.IMerchantAgentMessageService;
 import com.hmdp.service.IMerchantAgentSessionService;
 import com.hmdp.service.IMerchantAgentSuggestionService;
 import com.hmdp.service.IMerchantCampaignDraftService;
+import com.hmdp.service.IMerchantService;
 import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IShopService;
 import com.hmdp.service.IVoucherOrderService;
@@ -78,6 +79,8 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     @Resource
     private IMerchantAgentActionLogService agentActionLogService;
     @Resource
+    private IMerchantService merchantService;
+    @Resource
     private RedisIdWorker redisIdWorker;
     @Resource
     private ObjectMapper objectMapper;
@@ -91,6 +94,9 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         Shop shop = shopService.getById(shopId);
         if (shop == null) {
             return Result.fail("店铺不存在");
+        }
+        if (!merchantService.hasCurrentUserShopPermission(shopId)) {
+            return Result.fail("无权管理该店铺");
         }
 
         DateRange range = resolveDateRange(dateRange);
@@ -149,6 +155,9 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         if (shopService.getById(shopId) == null) {
             return Result.fail("店铺不存在");
         }
+        if (!merchantService.hasCurrentUserShopPermission(shopId)) {
+            return Result.fail("无权管理该店铺");
+        }
 
         List<AgentSession> sessions = agentSessionService.query()
                 .eq("shop_id", shopId)
@@ -195,6 +204,9 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         if (session == null) {
             return Result.fail("会话不存在");
         }
+        if (!merchantService.hasCurrentUserShopPermission(session.getShopId())) {
+            return Result.fail("无权查看该会话");
+        }
 
         List<AgentMessage> messages = agentMessageService.query()
                 .eq("session_id", sessionId)
@@ -226,6 +238,9 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         }
         if (shopService.getById(shopId) == null) {
             return Result.fail("店铺不存在");
+        }
+        if (!merchantService.hasCurrentUserShopPermission(shopId)) {
+            return Result.fail("无权管理该店铺");
         }
 
         List<AgentSuggestion> suggestions = agentSuggestionService.query()
@@ -275,6 +290,9 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         if (shop == null) {
             return Result.fail("店铺不存在");
         }
+        if (!merchantService.hasCurrentUserShopPermission(suggestion.getShopId())) {
+            return Result.fail("无权管理该店铺");
+        }
 
         AgentCampaignDraft draft = buildCampaignDraft(suggestion, shop, request);
         campaignDraftService.save(draft);
@@ -298,6 +316,9 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         }
         if (draft.getStatus() != null && draft.getStatus() != 1) {
             return Result.fail("活动草稿不是待确认状态，不能重复创建");
+        }
+        if (!merchantService.hasCurrentUserShopPermission(draft.getShopId())) {
+            return Result.fail("无权管理该店铺");
         }
 
         Voucher voucher = new Voucher()
