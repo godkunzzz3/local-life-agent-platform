@@ -17,6 +17,28 @@ public class MerchantCampaignDraftRequest {
      * 草稿类型：voucher / seckill。为空时默认 seckill。
      */
     private String draftType;
+    /**
+     * 建议类型，例如 voucher、seckill、content、review、member。
+     *
+     * <p>前端从运营报告 recommendations 中选择某条建议生成草稿时，
+     * 可以把建议类型传回来，后端据此生成更匹配的活动方案。</p>
+     */
+    private String recommendationType;
+
+    /**
+     * 建议标题。
+     */
+    private String recommendationTitle;
+
+    /**
+     * 建议原因。
+     */
+    private String recommendationReason;
+
+    /**
+     * 建议动作。
+     */
+    private String recommendationAction;
 
     /**
      * 活动标题。

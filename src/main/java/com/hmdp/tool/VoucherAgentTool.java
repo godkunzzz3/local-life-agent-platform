@@ -1,6 +1,7 @@
 package com.hmdp.tool;
 
 import com.hmdp.dto.MerchantCampaignDraftRequest;
+import com.hmdp.dto.VoucherStatsDTO;
 import com.hmdp.entity.AgentCampaignDraft;
 import com.hmdp.entity.AgentSuggestion;
 import com.hmdp.entity.SeckillVoucher;
@@ -51,7 +52,7 @@ public class VoucherAgentTool {
     /**
      * 汇总优惠券结构。
      */
-    public Map<String, Object> buildVoucherAnalysis(List<Voucher> vouchers, List<SeckillVoucher> seckillVouchers) {
+    public VoucherStatsDTO buildVoucherAnalysis(List<Voucher> vouchers, List<SeckillVoucher> seckillVouchers) {
         int normal = 0;
         int seckill = 0;
         int online = 0;
@@ -71,54 +72,66 @@ public class VoucherAgentTool {
             seckillStock += seckillVoucher.getStock() == null ? 0 : seckillVoucher.getStock();
         }
 
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("totalVouchers", vouchers.size());
-        result.put("onlineVouchers", online);
-        result.put("normalVouchers", normal);
-        result.put("seckillVouchers", seckill);
-        result.put("seckillStock", seckillStock);
-        result.put("hasSeckill", seckill > 0);
+        VoucherStatsDTO result = new VoucherStatsDTO();
+        result.setTotalVouchers(vouchers.size());
+        result.setOnlineVouchers(online);
+        result.setNormalVouchers(normal);
+        result.setSeckillVouchers(seckill);
+        result.setSeckillStock(seckillStock);
+        result.setHasSeckill(seckill > 0);
         return result;
     }
 
     /**
      * 根据 Agent 建议构建活动草稿。
+     *
+     * <p>草稿生成遵循 human-in-the-loop 原则：Agent 只生成草稿，
+     * 不直接写入真实优惠券表。商家确认后，才会调用 confirmCampaignDraft 创建真实券。</p>
      */
     public AgentCampaignDraft buildCampaignDraft(AgentSuggestion suggestion, Shop shop,
                                                  MerchantCampaignDraftRequest request, Long draftId) {
-        String draftType = normalizeDraftType(request == null ? null : request.getDraftType());
+        String draftType = resolveDraftType(suggestion, request);
+
         LocalDateTime beginTime = request != null && request.getBeginTime() != null
                 ? request.getBeginTime()
-                : LocalDateTime.now().plusDays(1).withHour(18).withMinute(0).withSecond(0).withNano(0);
+                : resolveDefaultBeginTime(draftType);
+
         LocalDateTime endTime = request != null && request.getEndTime() != null
                 ? request.getEndTime()
-                : beginTime.plusDays("seckill".equals(draftType) ? 2 : 30);
+                : resolveDefaultEndTime(draftType, beginTime);
 
         long defaultActualValue = resolveDefaultActualValue(shop);
-        long defaultPayValue = "seckill".equals(draftType)
-                ? Math.max(100L, Math.round(defaultActualValue * 0.59))
-                : Math.max(100L, Math.round(defaultActualValue * 0.80));
-        String typeName = "seckill".equals(draftType) ? "秒杀券" : "代金券";
+        long defaultPayValue = resolveDefaultPayValue(draftType, defaultActualValue);
+        Integer defaultStock = resolveDefaultStock(draftType);
 
         return new AgentCampaignDraft()
                 .setId(draftId)
                 .setSuggestionId(suggestion.getId())
                 .setShopId(suggestion.getShopId())
                 .setDraftType(draftType)
-                .setTitle(firstNotBlank(request == null ? null : request.getTitle(), shop.getName() + typeName))
-                .setSubTitle(firstNotBlank(request == null ? null : request.getSubTitle(), "Agent推荐活动，适合短期验证转化"))
+                .setTitle(firstNotBlank(
+                        request == null ? null : request.getTitle(),
+                        buildDefaultTitle(shop, draftType, request)
+                ))
+                .setSubTitle(firstNotBlank(
+                        request == null ? null : request.getSubTitle(),
+                        buildDefaultSubTitle(draftType, request)
+                ))
                 .setPayValue(request != null && request.getPayValue() != null ? request.getPayValue() : defaultPayValue)
                 .setActualValue(request != null && request.getActualValue() != null ? request.getActualValue() : defaultActualValue)
-                .setStock(request != null && request.getStock() != null ? request.getStock() : ("seckill".equals(draftType) ? 80 : null))
+                .setStock(request != null && request.getStock() != null ? request.getStock() : defaultStock)
                 .setBeginTime(beginTime)
                 .setEndTime(endTime)
                 .setRules(firstNotBlank(request == null ? null : request.getRules(), buildDefaultRules(draftType)))
-                .setReason(firstNotBlank(suggestion.getSummary(), suggestion.getContent()))
+                .setReason(buildDraftReason(suggestion, request))
                 .setStatus(1);
     }
 
     /**
      * 草稿确认后创建真实优惠券。
+     *
+     * <p>这里属于工具层，只负责把 Agent 草稿转换成数据库里的真实券。
+     * 秒杀库存写入 Redis 由门面 Service 在确认流程中统一编排，避免工具层隐藏缓存副作用。</p>
      */
     public Voucher createVoucherFromDraft(AgentCampaignDraft draft) {
         Voucher voucher = new Voucher()
@@ -134,7 +147,13 @@ public class VoucherAgentTool {
                     .setStock(draft.getStock() == null ? 50 : draft.getStock())
                     .setBeginTime(draft.getBeginTime())
                     .setEndTime(draft.getEndTime());
-            voucherService.addSeckillVoucher(voucher);
+            voucherService.save(voucher);
+            SeckillVoucher seckillVoucher = new SeckillVoucher()
+                    .setVoucherId(voucher.getId())
+                    .setStock(voucher.getStock())
+                    .setBeginTime(voucher.getBeginTime())
+                    .setEndTime(voucher.getEndTime());
+            seckillVoucherService.save(seckillVoucher);
         } else {
             voucher.setType(0);
             voucherService.save(voucher);
@@ -169,9 +188,58 @@ public class VoucherAgentTool {
         return row;
     }
 
+    private String resolveDraftType(AgentSuggestion suggestion, MerchantCampaignDraftRequest request) {
+        if (request != null && request.getDraftType() != null && !request.getDraftType().trim().isEmpty()) {
+            return normalizeDraftType(request.getDraftType());
+        }
+
+        String recommendationType = request == null ? null : request.getRecommendationType();
+        if (recommendationType != null) {
+            if ("voucher".equalsIgnoreCase(recommendationType)
+                    || "member".equalsIgnoreCase(recommendationType)
+                    || "content".equalsIgnoreCase(recommendationType)
+                    || "review".equalsIgnoreCase(recommendationType)) {
+                return "voucher";
+            }
+            if ("seckill".equalsIgnoreCase(recommendationType)) {
+                return "seckill";
+            }
+        }
+
+        String text = (suggestion.getSummary() == null ? "" : suggestion.getSummary())
+                + " "
+                + (suggestion.getContent() == null ? "" : suggestion.getContent());
+
+        if (text.contains("普通代金券") || text.contains("复购") || text.contains("会员")) {
+            return "voucher";
+        }
+        if (text.contains("秒杀") || text.contains("限时") || text.contains("小库存")) {
+            return "seckill";
+        }
+        return "seckill";
+    }
+
+    private LocalDateTime resolveDefaultBeginTime(String draftType) {
+        LocalDateTime tomorrow = LocalDateTime.now().plusDays(1);
+        if ("seckill".equals(draftType)) {
+            return tomorrow.withHour(18).withMinute(0).withSecond(0).withNano(0);
+        }
+        return tomorrow.withHour(10).withMinute(0).withSecond(0).withNano(0);
+    }
+
+    private LocalDateTime resolveDefaultEndTime(String draftType, LocalDateTime beginTime) {
+        if ("seckill".equals(draftType)) {
+            return beginTime.plusDays(2);
+        }
+        return beginTime.plusDays(30);
+    }
+
     private String normalizeDraftType(String draftType) {
         if ("voucher".equalsIgnoreCase(draftType)) {
             return "voucher";
+        }
+        if ("seckill".equalsIgnoreCase(draftType)) {
+            return "seckill";
         }
         return "seckill";
     }
@@ -196,6 +264,58 @@ public class VoucherAgentTool {
 
     private String firstNotBlank(String first, String fallback) {
         return first == null || first.trim().isEmpty() ? fallback : first.trim();
+    }
+
+    private long resolveDefaultPayValue(String draftType, long actualValue) {
+        if ("seckill".equals(draftType)) {
+            return Math.max(100L, Math.round(actualValue * 0.59));
+        }
+        return Math.max(100L, Math.round(actualValue * 0.80));
+    }
+
+    private String buildDefaultTitle(Shop shop, String draftType, MerchantCampaignDraftRequest request) {
+        String recommendationTitle = request == null ? null : request.getRecommendationTitle();
+        if (recommendationTitle != null && !recommendationTitle.trim().isEmpty()) {
+            return shop.getName() + "｜" + recommendationTitle.trim();
+        }
+
+        if ("seckill".equals(draftType)) {
+            return shop.getName() + "限时秒杀券";
+        }
+        return shop.getName() + "代金券";
+    }
+
+    private String buildDefaultSubTitle(String draftType, MerchantCampaignDraftRequest request) {
+        String recommendationAction = request == null ? null : request.getRecommendationAction();
+        if (recommendationAction != null && !recommendationAction.trim().isEmpty()) {
+            return recommendationAction.trim();
+        }
+
+        if ("seckill".equals(draftType)) {
+            return "Agent推荐小库存活动，适合短期验证转化";
+        }
+        return "Agent推荐低风险活动，适合持续拉新和复购";
+    }
+
+    private String buildDraftReason(AgentSuggestion suggestion, MerchantCampaignDraftRequest request) {
+        String recommendationReason = request == null ? null : request.getRecommendationReason();
+        String recommendationAction = request == null ? null : request.getRecommendationAction();
+
+        if (recommendationReason != null && !recommendationReason.trim().isEmpty()) {
+            if (recommendationAction != null && !recommendationAction.trim().isEmpty()) {
+                return recommendationReason.trim() + " " + recommendationAction.trim();
+            }
+            return recommendationReason.trim();
+        }
+
+        return firstNotBlank(suggestion.getSummary(), suggestion.getContent());
+    }
+
+    private Integer resolveDefaultStock(String draftType) {
+        if ("seckill".equals(draftType)) {
+            return 80;
+        }
+        return null;
     }
 
     private String resolveDraftStatusName(Integer status) {

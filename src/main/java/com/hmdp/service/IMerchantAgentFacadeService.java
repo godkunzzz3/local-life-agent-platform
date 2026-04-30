@@ -54,6 +54,55 @@ public interface IMerchantAgentFacadeService {
     Result createCampaignDraft(Long suggestionId, MerchantCampaignDraftRequest request);
 
     /**
+     * 查询某个店铺的活动草稿列表。
+     *
+     * @param shopId 店铺ID
+     * @return 草稿列表
+     */
+    Result queryShopDrafts(Long shopId);
+
+    /**
+     * 查询活动草稿详情。
+     *
+     * @param draftId 草稿ID
+     * @return 草稿详情
+     */
+    Result queryCampaignDraftDetail(Long draftId);
+
+    /**
+     * 商家拒绝活动草稿。
+     *
+     * @param draftId 草稿ID
+     * @return 拒绝后的草稿详情
+     */
+    Result rejectCampaignDraft(Long draftId);
+
+    /**
+     * 商家确认前修改活动草稿。
+     *
+     * @param draftId 草稿ID
+     * @param request 草稿修改字段
+     * @return 修改后的草稿详情
+     */
+    Result updateCampaignDraft(Long draftId, MerchantCampaignDraftRequest request);
+
+    /**
+     * 查询单个活动草稿的操作日志。
+     *
+     * @param draftId 草稿ID
+     * @return 草稿操作日志列表
+     */
+    Result queryDraftActions(Long draftId);
+
+    /**
+     * 查询店铺维度的 Agent 操作动态。
+     *
+     * @param shopId 店铺ID
+     * @return 店铺操作日志列表
+     */
+    Result queryShopActions(Long shopId);
+
+    /**
      * 商家确认活动草稿后创建真实优惠券。
      *
      * @param draftId 草稿ID

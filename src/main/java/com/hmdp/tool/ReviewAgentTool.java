@@ -13,7 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
-
+import com.hmdp.dto.ReviewStatsDTO;
 /**
  * 评价与内容 Agent 工具。
  *
@@ -53,7 +53,7 @@ public class ReviewAgentTool {
     /**
      * 汇总内容互动数据。
      */
-    public Map<String, Object> buildReviewAnalysis(List<Blog> blogs, List<BlogComments> comments) {
+    public ReviewStatsDTO buildReviewAnalysis(List<Blog> blogs, List<BlogComments> comments) {
         int liked = 0;
         int blogCommentCount = 0;
         List<String> recentContents = new ArrayList<>();
@@ -65,13 +65,19 @@ public class ReviewAgentTool {
             }
         }
 
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("blogCount", blogs.size());
-        result.put("likedCount", liked);
-        result.put("commentCount", Math.max(blogCommentCount, comments.size()));
-        result.put("recentContents", recentContents);
-        result.put("engagementLevel", resolveEngagementLevel(blogs.size(), liked, comments.size()));
+        ReviewStatsDTO result = new ReviewStatsDTO();
+        result.setBlogCount(blogs == null ? 0 : blogs.size());
+        result.setLikedCount(liked);
+        result.setCommentCount(blogCommentCount + (comments == null ? 0 : comments.size()));
+        result.setRecentContents(recentContents);
+        result.setEngagementLevel(resolveEngagementLevel(
+                result.getBlogCount(),
+                result.getLikedCount(),
+                result.getCommentCount()
+        ));
         return result;
+
+
     }
 
     private String resolveEngagementLevel(int blogCount, int likedCount, int commentCount) {

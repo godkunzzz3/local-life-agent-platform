@@ -5,9 +5,8 @@ import com.hmdp.service.IShopService;
 import org.springframework.stereotype.Component;
 
 import javax.annotation.Resource;
-import java.util.LinkedHashMap;
-import java.util.Map;
 
+import com.hmdp.dto.ShopProfileDTO;
 /**
  * 店铺 Agent 工具。
  *
@@ -30,17 +29,17 @@ public class ShopAgentTool {
     /**
      * 构建面向 Agent 的店铺画像。
      */
-    public Map<String, Object> buildShopProfile(Shop shop) {
-        Map<String, Object> profile = new LinkedHashMap<>();
-        profile.put("name", shop.getName());
-        profile.put("typeId", shop.getTypeId());
-        profile.put("area", shop.getArea());
-        profile.put("address", shop.getAddress());
-        profile.put("avgPrice", shop.getAvgPrice());
-        profile.put("score", shop.getScore());
-        profile.put("sold", shop.getSold());
-        profile.put("comments", shop.getComments());
-        profile.put("openHours", shop.getOpenHours());
+    public ShopProfileDTO buildShopProfile(Shop shop) {
+        ShopProfileDTO profile = new ShopProfileDTO();
+        profile.setName(shop.getName());
+        profile.setTypeId(shop.getTypeId());
+        profile.setArea(shop.getArea());
+        profile.setAddress(shop.getAddress());
+        profile.setAvgPrice(shop.getAvgPrice());
+        profile.setScore(shop.getScore());
+        profile.setSold(shop.getSold());
+        profile.setComments(shop.getComments());
+        profile.setOpenHours(shop.getOpenHours());
         return profile;
     }
 }

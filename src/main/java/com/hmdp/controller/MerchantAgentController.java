@@ -75,4 +75,53 @@ public class MerchantAgentController {
         return merchantAgentFacadeService.confirmCampaignDraft(draftId);
     }
 
+    /**
+     * 查询当前店铺所有草稿，按创建时间倒序返回。
+     */
+    @GetMapping("/shops/{shopId}/drafts")
+    public Result queryShopDrafts(@PathVariable("shopId") Long shopId) {
+        return merchantAgentFacadeService.queryShopDrafts(shopId);
+    }
+
+    /**
+     * 查询单个活动草稿详情。
+     */
+    @GetMapping("/drafts/{draftId}")
+    public Result queryCampaignDraftDetail(@PathVariable("draftId") Long draftId) {
+        return merchantAgentFacadeService.queryCampaignDraftDetail(draftId);
+    }
+    /**
+     * 商家觉得 Agent 生成的草稿不合适，可以拒绝。
+     *
+     *
+     */
+    @PostMapping("/drafts/{draftId}/reject")
+    public Result rejectCampaignDraft(@PathVariable("draftId") Long draftId) {
+        return merchantAgentFacadeService.rejectCampaignDraft(draftId);
+    }
+
+    /**
+     * 商家确认前，可以微调草稿，比如标题、金额、库存、活动时间、规则。
+     */
+    @PutMapping("/drafts/{draftId}")
+    public Result updateCampaignDraft(@PathVariable("draftId") Long draftId,
+                                      @RequestBody MerchantCampaignDraftRequest request) {
+        return merchantAgentFacadeService.updateCampaignDraft(draftId, request);
+    }
+
+    /**
+     * 查询单个活动草稿的操作日志。
+     */
+    @GetMapping("/drafts/{draftId}/actions")
+    public Result queryDraftActions(@PathVariable("draftId") Long draftId) {
+        return merchantAgentFacadeService.queryDraftActions(draftId);
+    }
+
+    /**
+     * 查询店铺维度的 Agent 操作动态。
+     */
+    @GetMapping("/shops/{shopId}/actions")
+    public Result queryShopActions(@PathVariable("shopId") Long shopId) {
+        return merchantAgentFacadeService.queryShopActions(shopId);
+    }
 }

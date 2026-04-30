@@ -1,5 +1,6 @@
 package com.hmdp.tool;
 
+import com.hmdp.dto.OrderStatsDTO;
 import com.hmdp.entity.Voucher;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.service.IVoucherOrderService;
@@ -42,7 +43,8 @@ public class OrderAgentTool {
     /**
      * 汇总订单表现：订单数、支付数、收入、优惠成本、热门券等。
      */
-    public Map<String, Object> buildOrderAnalysis(List<VoucherOrder> orders, Map<Long, Voucher> voucherMap) {
+    public OrderStatsDTO buildOrderAnalysis(List<VoucherOrder> orders, Map<Long, Voucher> voucherMap)
+    {
         int total = orders.size();
         int paid = 0;
         int used = 0;
@@ -74,17 +76,17 @@ public class OrderAgentTool {
             voucherOrderCount.put(order.getVoucherId(), voucherOrderCount.getOrDefault(order.getVoucherId(), 0) + 1);
         }
 
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("totalOrders", total);
-        result.put("paidOrders", paid);
-        result.put("usedOrders", used);
-        result.put("pendingOrders", pending);
-        result.put("refundedOrders", refunded);
-        result.put("estimatedRevenue", revenue);
-        result.put("estimatedDiscount", discount);
-        result.put("averageOrderValue", paid == 0 ? 0 : revenue / paid);
-        result.put("conversionRate", total == 0 ? "0.00%" : percent(paid, total));
-        result.put("topVoucher", resolveTopVoucher(voucherOrderCount, voucherMap));
+        OrderStatsDTO result = new OrderStatsDTO();
+        result.setTotalOrders(total);
+        result.setPaidOrders(paid);
+        result.setUsedOrders(used);
+        result.setPendingOrders(pending);
+        result.setRefundedOrders(refunded);
+        result.setEstimatedRevenue(revenue);
+        result.setEstimatedDiscount(discount);
+        result.setAverageOrderValue(paid == 0 ? 0 : revenue / paid);
+        result.setConversionRate(total == 0 ? "0.00%" : percent(paid, total));
+        result.setTopVoucher(resolveTopVoucher(voucherOrderCount, voucherMap));
         return result;
     }
 
