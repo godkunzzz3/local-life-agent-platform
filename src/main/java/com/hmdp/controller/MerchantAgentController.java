@@ -2,6 +2,7 @@ package com.hmdp.controller;
 
 import com.hmdp.dto.MerchantOperationReportRequest;
 import com.hmdp.dto.MerchantCampaignDraftRequest;
+import com.hmdp.dto.MerchantAgentChatRequest;
 import com.hmdp.dto.Result;
 import com.hmdp.service.IMerchantAgentFacadeService;
 import org.springframework.web.bind.annotation.*;
@@ -118,10 +119,45 @@ public class MerchantAgentController {
     }
 
     /**
+     * 查询活动效果复盘。
+     *
+     * <p>草稿确认后会创建真实优惠券。这个接口把草稿和真实券订单串起来，
+     * 用于判断 Agent 建议是否真的带来了成交和核销。</p>
+     */
+    @GetMapping("/drafts/{draftId}/effect")
+    public Result queryCampaignEffect(@PathVariable("draftId") Long draftId) {
+        return merchantAgentFacadeService.queryCampaignEffect(draftId);
+    }
+
+    /**
+     * 基于活动效果生成下一步运营建议。
+     *
+     * <p>商家看完复盘后，可以让 Agent 继续判断下一步动作。
+     * autoDraft=true 时会直接生成待确认草稿，仍然需要商家确认后才创建真实活动。</p>
+     */
+    @PostMapping("/drafts/{draftId}/effect-suggestion")
+    public Result createEffectSuggestion(@PathVariable("draftId") Long draftId,
+                                         @RequestParam(value = "autoDraft", required = false) Boolean autoDraft) {
+        return merchantAgentFacadeService.createEffectSuggestion(draftId, autoDraft);
+    }
+
+    /**
      * 查询店铺维度的 Agent 操作动态。
      */
     @GetMapping("/shops/{shopId}/actions")
     public Result queryShopActions(@PathVariable("shopId") Long shopId) {
         return merchantAgentFacadeService.queryShopActions(shopId);
+    }
+
+    /**
+     * 商家与运营 Agent 对话。
+     *
+     * <p>这是从“固定按钮式报告”升级到“可对话 Agent”的入口。Controller 只接收问题，
+     * 具体的意图识别、工具调用、消息落库和草稿生成都交给 Facade Service。</p>
+     */
+    @PostMapping("/shops/{shopId}/chat")
+    public Result chatWithAgent(@PathVariable("shopId") Long shopId,
+                                @RequestBody MerchantAgentChatRequest request) {
+        return merchantAgentFacadeService.chatWithAgent(shopId, request);
     }
 }

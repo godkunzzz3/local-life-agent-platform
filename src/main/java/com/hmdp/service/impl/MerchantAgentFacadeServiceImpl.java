@@ -440,6 +440,97 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     }
 
     @Override
+    public Result queryCampaignEffect(Long draftId) {
+        if (draftId == null) {
+            return Result.fail("草稿id不能为空");
+        }
+        AgentCampaignDraft draft = campaignDraftService.getById(draftId);
+        if (draft == null) {
+            return Result.fail("活动草稿不存在");
+        }
+        if (!merchantService.hasCurrentUserShopPermission(draft.getShopId())) {
+            return Result.fail("无权查看该活动效果");
+        }
+        if (draft.getStatus() == null || draft.getStatus() != 2) {
+            return Result.fail("活动还未创建，暂无效果数据");
+        }
+
+        Long voucherId = resolveConfirmedVoucherId(draft);
+        if (voucherId == null) {
+            return Result.fail("未找到草稿对应的真实优惠券，请确认活动是否创建成功");
+        }
+
+        Voucher voucher = resolveShopVoucher(draft.getShopId(), voucherId);
+        if (voucher == null) {
+            return Result.fail("真实优惠券不存在或不属于当前店铺");
+        }
+
+        LocalDateTime startTime = draft.getBeginTime() == null ? draft.getCreateTime() : draft.getBeginTime();
+        List<VoucherOrder> orders = orderAgentTool.queryOrders(Collections.singletonList(voucherId), startTime);
+        Map<Long, Voucher> voucherMap = Collections.singletonMap(voucherId, voucher);
+        OrderStatsDTO orderStats = orderAgentTool.buildOrderAnalysis(orders, voucherMap);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("draft", voucherAgentTool.draftToMap(draft));
+        result.put("voucher", voucherToEffectMap(voucher));
+        result.put("voucherId", String.valueOf(voucherId));
+        result.put("startTime", startTime);
+        result.put("endTime", LocalDateTime.now());
+        result.put("campaignStatus", resolveCampaignStatus(draft));
+        result.put("orderAnalysis", orderStats);
+        result.put("effectLevel", resolveEffectLevel(orderStats));
+        result.put("insight", buildCampaignEffectInsight(draft, voucher, orderStats));
+        result.put("nextAction", buildCampaignNextAction(orderStats));
+
+        recordAction(null, draft.getShopId(), currentMerchantId(),
+                "query_campaign_effect", "draft", draft.getId(), result);
+        return Result.ok(result);
+    }
+
+    @Override
+    @Transactional
+    public Result createEffectSuggestion(Long draftId, Boolean autoDraft) {
+        if (draftId == null) {
+            return Result.fail("草稿id不能为空");
+        }
+        AgentCampaignDraft draft = campaignDraftService.getById(draftId);
+        if (draft == null) {
+            return Result.fail("活动草稿不存在");
+        }
+        if (!merchantService.hasCurrentUserShopPermission(draft.getShopId())) {
+            return Result.fail("无权管理该店铺");
+        }
+        if (draft.getStatus() == null || draft.getStatus() != 2) {
+            return Result.fail("活动还未创建，暂不能生成复盘建议");
+        }
+
+        CampaignEffectContext context = buildCampaignEffectContext(draft);
+        if (context.getVoucher() == null) {
+            return Result.fail("未找到草稿对应的真实优惠券，请确认活动是否创建成功");
+        }
+
+        AgentRecommendationDTO recommendation = buildEffectRecommendation(draft, context);
+        Long suggestionId = saveEffectSuggestion(draft, context, recommendation);
+        AgentCampaignDraft nextDraft = null;
+        if (Boolean.TRUE.equals(autoDraft)) {
+            nextDraft = createDraftFromEffectSuggestion(suggestionId, recommendation, context);
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("suggestionId", String.valueOf(suggestionId));
+        result.put("recommendation", recommendation);
+        result.put("draftId", nextDraft == null ? null : String.valueOf(nextDraft.getId()));
+        result.put("draft", nextDraft == null ? null : voucherAgentTool.draftToMap(nextDraft));
+        result.put("effectLevel", resolveEffectLevel(context.getOrderStats()));
+        result.put("campaignStatus", resolveCampaignStatus(draft));
+        result.put("orderAnalysis", context.getOrderStats());
+        result.put("message", nextDraft == null ? "已生成复盘建议" : "已生成复盘建议和下一轮草稿");
+        recordAction(null, draft.getShopId(), currentMerchantId(),
+                "create_effect_suggestion", "suggestion", suggestionId, result);
+        return Result.ok(result);
+    }
+
+    @Override
     public Result queryShopActions(Long shopId) {
         if (shopId == null) {
             return Result.fail("店铺id不能为空");
@@ -588,6 +679,324 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         recordAction(sessionId, draft.getShopId(), currentMerchantId(),
                 "confirm_campaign_draft", "voucher", voucher.getId(), result);
         return Result.ok(result);
+    }
+
+    @Override
+    @Transactional
+    public Result chatWithAgent(Long shopId, MerchantAgentChatRequest request) {
+        if (shopId == null) {
+            return Result.fail("店铺id不能为空");
+        }
+        if (request == null || isBlank(request.getMessage())) {
+            return Result.fail("请输入要咨询 Agent 的问题");
+        }
+        Shop shop = shopAgentTool.getShop(shopId);
+        if (shop == null) {
+            return Result.fail("店铺不存在");
+        }
+        if (!merchantService.hasCurrentUserShopPermission(shopId)) {
+            return Result.fail("无权管理该店铺");
+        }
+
+        String userMessage = request.getMessage().trim();
+        String intent = resolveChatIntent(userMessage);
+        DateRange range = resolveDateRange(resolveChatDateRange(userMessage, request.getDateRange()));
+        AgentContext context = buildAgentContext(shop, range);
+
+        Long sessionId = nextAgentId();
+        Long merchantId = currentMerchantId();
+        AgentSession session = new AgentSession()
+                .setId(sessionId)
+                .setShopId(shopId)
+                .setMerchantId(merchantId)
+                .setTitle(buildChatSessionTitle(userMessage))
+                .setScene(intent)
+                .setStatus(2);
+        agentSessionService.save(session);
+
+        // 对话链路先保存用户消息，再保存工具结果和助手回复，后续接大模型时可作为上下文记忆。
+        saveMessage(sessionId, shopId, "user", userMessage, null, null, null);
+        Map<String, Object> toolResult = buildChatToolResult(context, intent, range);
+        saveMessage(sessionId, shopId, "tool", "已调用 " + resolveChatToolName(intent), resolveChatToolName(intent),
+                toSimpleJson(buildChatToolArgs(shopId, intent, range)), toSimpleJson(toolResult));
+
+        AgentRecommendationDTO recommendation = selectRecommendationByIntent(context.getRecommendations(), intent);
+        Long suggestionId = null;
+        AgentCampaignDraft draft = null;
+        if (shouldSaveSuggestion(intent)) {
+            suggestionId = saveChatSuggestion(sessionId, shopId, intent, recommendation, context);
+        }
+        if (suggestionId != null && shouldAutoCreateDraft(userMessage, request, intent)) {
+            draft = createDraftFromChatSuggestion(suggestionId, recommendation, shop);
+        }
+
+        String reply = buildChatReply(intent, context, recommendation, draft);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("sessionId", String.valueOf(sessionId));
+        result.put("shopId", shopId);
+        result.put("intent", intent);
+        result.put("intentName", resolveChatIntentName(intent));
+        result.put("reply", reply);
+        result.put("suggestionId", suggestionId == null ? null : String.valueOf(suggestionId));
+        result.put("draftId", draft == null ? null : String.valueOf(draft.getId()));
+        result.put("draft", draft == null ? null : voucherAgentTool.draftToMap(draft));
+        result.put("toolResult", toolResult);
+
+        saveMessage(sessionId, shopId, "assistant", reply, null, null, toSimpleJson(result));
+        recordAction(sessionId, shopId, merchantId, "agent_chat", "session", sessionId, result);
+        return Result.ok(result);
+    }
+
+    private AgentContext buildAgentContext(Shop shop, DateRange range) {
+        List<Voucher> vouchers = voucherAgentTool.queryShopVouchers(shop.getId());
+        List<Long> voucherIds = vouchers.stream().map(Voucher::getId).collect(Collectors.toList());
+        Map<Long, Voucher> voucherMap = vouchers.stream().collect(Collectors.toMap(Voucher::getId, voucher -> voucher));
+        List<VoucherOrder> orders = orderAgentTool.queryOrders(voucherIds, range.getStartTime());
+        List<SeckillVoucher> seckillVouchers = voucherAgentTool.querySeckillVouchers(voucherIds);
+        List<Blog> blogs = reviewAgentTool.queryShopBlogs(shop.getId());
+        List<BlogComments> comments = reviewAgentTool.queryComments(blogs);
+
+        AgentContext context = new AgentContext();
+        context.setShop(shop);
+        context.setShopProfile(shopAgentTool.buildShopProfile(shop));
+        context.setOrderAnalysis(orderAgentTool.buildOrderAnalysis(orders, voucherMap));
+        context.setVoucherAnalysis(voucherAgentTool.buildVoucherAnalysis(vouchers, seckillVouchers));
+        context.setReviewAnalysis(reviewAgentTool.buildReviewAnalysis(blogs, comments));
+        context.setRecommendations(buildRecommendations(shop, orders, vouchers, seckillVouchers, blogs, comments));
+        return context;
+    }
+
+    private String resolveChatIntent(String message) {
+        String text = message == null ? "" : message;
+        if (containsAny(text, "秒杀", "优惠券", "代金券", "活动", "拉新", "复购", "草稿")) {
+            return "voucher_plan";
+        }
+        if (containsAny(text, "评价", "评论", "探店", "内容", "笔记", "口碑")) {
+            return "review_analysis";
+        }
+        if (containsAny(text, "订单", "销售", "收入", "营收", "成交", "转化", "支付")) {
+            return "order_analysis";
+        }
+        return "operation_chat";
+    }
+
+    private String resolveChatDateRange(String message, String requestRange) {
+        if (!isBlank(requestRange)) {
+            return requestRange;
+        }
+        if (message != null && (message.contains("今天") || message.contains("今日"))) {
+            return "TODAY";
+        }
+        if (message != null && (message.contains("7天") || message.contains("一周") || message.contains("近周"))) {
+            return "LAST_7_DAYS";
+        }
+        return "LAST_30_DAYS";
+    }
+
+    private String buildChatSessionTitle(String message) {
+        String title = message.trim();
+        if (title.length() > 18) {
+            return title.substring(0, 18) + "...";
+        }
+        return title;
+    }
+
+    private Map<String, Object> buildChatToolArgs(Long shopId, String intent, DateRange range) {
+        Map<String, Object> args = new LinkedHashMap<>();
+        args.put("shopId", shopId);
+        args.put("intent", intent);
+        args.put("dateRange", range.getCode());
+        args.put("startTime", range.getStartTime());
+        args.put("endTime", range.getEndTime());
+        return args;
+    }
+
+    private Map<String, Object> buildChatToolResult(AgentContext context, String intent, DateRange range) {
+        Map<String, Object> toolResult = new LinkedHashMap<>();
+        toolResult.put("dateRange", range.getCode());
+        toolResult.put("shopProfile", context.getShopProfile());
+        if ("order_analysis".equals(intent)) {
+            toolResult.put("orderAnalysis", context.getOrderAnalysis());
+            return toolResult;
+        }
+        if ("voucher_plan".equals(intent)) {
+            toolResult.put("voucherAnalysis", context.getVoucherAnalysis());
+            toolResult.put("recommendations", context.getRecommendations());
+            return toolResult;
+        }
+        if ("review_analysis".equals(intent)) {
+            toolResult.put("reviewAnalysis", context.getReviewAnalysis());
+            toolResult.put("recommendations", context.getRecommendations());
+            return toolResult;
+        }
+        toolResult.put("orderAnalysis", context.getOrderAnalysis());
+        toolResult.put("voucherAnalysis", context.getVoucherAnalysis());
+        toolResult.put("reviewAnalysis", context.getReviewAnalysis());
+        toolResult.put("recommendations", context.getRecommendations());
+        return toolResult;
+    }
+
+    private AgentRecommendationDTO selectRecommendationByIntent(List<AgentRecommendationDTO> recommendations, String intent) {
+        if (recommendations == null || recommendations.isEmpty()) {
+            return buildRecommendation("operation", "继续观察经营数据",
+                    "当前数据暂未触发强规则建议。",
+                    "建议先生成完整运营报告，观察订单、券和评价三类指标。",
+                    3, 1, "保持经营动作可追踪，为后续 Agent 分析积累数据。");
+        }
+        if ("voucher_plan".equals(intent)) {
+            for (AgentRecommendationDTO recommendation : recommendations) {
+                if (containsAny(recommendation.getType(), "seckill", "voucher", "member")) {
+                    return recommendation;
+                }
+            }
+        }
+        if ("review_analysis".equals(intent)) {
+            for (AgentRecommendationDTO recommendation : recommendations) {
+                if (containsAny(recommendation.getType(), "review", "content", "shop")) {
+                    return recommendation;
+                }
+            }
+        }
+        return recommendations.get(0);
+    }
+
+    private boolean shouldSaveSuggestion(String intent) {
+        return "voucher_plan".equals(intent)
+                || "review_analysis".equals(intent)
+                || "operation_chat".equals(intent);
+    }
+
+    private Long saveChatSuggestion(Long sessionId, Long shopId, String intent,
+                                    AgentRecommendationDTO recommendation, AgentContext context) {
+        AgentSuggestion suggestion = new AgentSuggestion()
+                .setId(nextAgentId())
+                .setSessionId(sessionId)
+                .setShopId(shopId)
+                .setSuggestionType(recommendation.getType() == null ? intent : recommendation.getType())
+                .setTitle(recommendation.getTitle())
+                .setSummary(recommendation.getReason())
+                .setContent(recommendation.getAction() + " 预期效果：" + recommendation.getExpectedEffect())
+                .setConfidenceScore(new BigDecimal("78.00"))
+                .setRiskLevel(recommendation.getRiskLevel() == null ? 1 : recommendation.getRiskLevel())
+                .setStatus(1);
+        agentSuggestionService.save(suggestion);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("suggestionId", String.valueOf(suggestion.getId()));
+        result.put("recommendation", recommendation);
+        result.put("shopName", context.getShop().getName());
+        recordAction(sessionId, shopId, currentMerchantId(), "create_chat_suggestion",
+                "suggestion", suggestion.getId(), result);
+        return suggestion.getId();
+    }
+
+    private boolean shouldAutoCreateDraft(String userMessage, MerchantAgentChatRequest request, String intent) {
+        if (!"voucher_plan".equals(intent)) {
+            return false;
+        }
+        if (request.getAutoDraft() != null) {
+            return request.getAutoDraft();
+        }
+        return containsAny(userMessage, "生成", "设计", "草稿", "秒杀券", "代金券", "优惠券", "活动");
+    }
+
+    private AgentCampaignDraft createDraftFromChatSuggestion(Long suggestionId, AgentRecommendationDTO recommendation, Shop shop) {
+        AgentSuggestion suggestion = agentSuggestionService.getById(suggestionId);
+        MerchantCampaignDraftRequest draftRequest = new MerchantCampaignDraftRequest();
+        draftRequest.setRecommendationType(recommendation.getType());
+        draftRequest.setRecommendationTitle(recommendation.getTitle());
+        draftRequest.setRecommendationReason(recommendation.getReason());
+        draftRequest.setRecommendationAction(recommendation.getAction());
+        AgentCampaignDraft draft = voucherAgentTool.buildCampaignDraft(suggestion, shop, draftRequest, nextAgentId());
+        campaignDraftService.save(draft);
+        agentSuggestionService.updateById(new AgentSuggestion()
+                .setId(suggestionId)
+                .setStatus(2));
+        recordAction(suggestion.getSessionId(), shop.getId(), currentMerchantId(),
+                "create_campaign_draft", "draft", draft.getId(), voucherAgentTool.draftToMap(draft));
+        return draft;
+    }
+
+    private String buildChatReply(String intent, AgentContext context,
+                                  AgentRecommendationDTO recommendation, AgentCampaignDraft draft) {
+        Shop shop = context.getShop();
+        OrderStatsDTO order = context.getOrderAnalysis();
+        VoucherStatsDTO voucher = context.getVoucherAnalysis();
+        ReviewStatsDTO review = context.getReviewAnalysis();
+        if ("order_analysis".equals(intent)) {
+            return shop.getName() + "当前周期共有券订单" + order.getTotalOrders()
+                    + "笔，已支付" + order.getPaidOrders()
+                    + "笔，预计收入" + formatFen(order.getEstimatedRevenue())
+                    + "，支付转化率" + order.getConversionRate()
+                    + "。热门券是：" + order.getTopVoucher() + "。";
+        }
+        if ("voucher_plan".equals(intent)) {
+            String reply = "我建议采用【" + recommendation.getTitle() + "】。原因是："
+                    + recommendation.getReason() + " " + recommendation.getAction()
+                    + " 当前店铺在线券" + voucher.getOnlineVouchers()
+                    + "张，秒杀库存" + voucher.getSeckillStock() + "。";
+            if (draft != null) {
+                reply += " 我已经生成待确认活动草稿，商家可以继续编辑后确认创建。";
+            }
+            return reply;
+        }
+        if ("review_analysis".equals(intent)) {
+            return "内容侧当前有探店笔记" + review.getBlogCount()
+                    + "篇，评论互动" + review.getCommentCount()
+                    + "次，互动等级为" + review.getEngagementLevel()
+                    + "。建议：" + recommendation.getAction();
+        }
+        return shop.getName() + "当前周期订单" + order.getTotalOrders()
+                + "笔，在线优惠券" + voucher.getOnlineVouchers()
+                + "张，内容互动等级" + review.getEngagementLevel()
+                + "。优先建议：" + recommendation.getTitle() + "，" + recommendation.getAction();
+    }
+
+    private String resolveChatToolName(String intent) {
+        if ("order_analysis".equals(intent)) {
+            return "OrderAgentTool";
+        }
+        if ("voucher_plan".equals(intent)) {
+            return "VoucherAgentTool";
+        }
+        if ("review_analysis".equals(intent)) {
+            return "ReviewAgentTool";
+        }
+        return "MerchantOperationAgent";
+    }
+
+    private String resolveChatIntentName(String intent) {
+        if ("order_analysis".equals(intent)) {
+            return "订单分析";
+        }
+        if ("voucher_plan".equals(intent)) {
+            return "活动方案";
+        }
+        if ("review_analysis".equals(intent)) {
+            return "评价内容分析";
+        }
+        return "综合运营咨询";
+    }
+
+    private boolean containsAny(String text, String... keywords) {
+        if (text == null) {
+            return false;
+        }
+        for (String keyword : keywords) {
+            if (keyword != null && text.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
+    }
+
+    private String formatFen(Long value) {
+        long fen = value == null ? 0L : value;
+        return "¥" + (fen / 100) + "." + String.format("%02d", Math.abs(fen % 100));
     }
 
     /**
@@ -871,6 +1280,252 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         return result;
     }
 
+    private Long resolveConfirmedVoucherId(AgentCampaignDraft draft) {
+        List<AgentActionLog> actionLogs = agentActionLogService.query()
+                .eq("shop_id", draft.getShopId())
+                .eq("action_type", "confirm_campaign_draft")
+                .eq("status", 1)
+                .orderByDesc("create_time")
+                .list();
+        for (AgentActionLog actionLog : actionLogs) {
+            Map<String, Object> resultData = parseJsonMap(actionLog.getResultData());
+            Object draftIdValue = resultData.get("draftId");
+            if (draftIdValue != null && String.valueOf(draft.getId()).equals(String.valueOf(draftIdValue))) {
+                Long voucherId = toLong(resultData.get("voucherId"));
+                if (voucherId != null) {
+                    return voucherId;
+                }
+                return actionLog.getTargetId();
+            }
+        }
+        return null;
+    }
+
+    private Voucher resolveShopVoucher(Long shopId, Long voucherId) {
+        List<Voucher> vouchers = voucherAgentTool.queryShopVouchers(shopId);
+        for (Voucher voucher : vouchers) {
+            if (voucher.getId() != null && voucher.getId().equals(voucherId)) {
+                return voucher;
+            }
+        }
+        return null;
+    }
+
+    private CampaignEffectContext buildCampaignEffectContext(AgentCampaignDraft draft) {
+        Long voucherId = resolveConfirmedVoucherId(draft);
+        Voucher voucher = voucherId == null ? null : resolveShopVoucher(draft.getShopId(), voucherId);
+        if (voucher == null) {
+            return new CampaignEffectContext(voucherId, null, Collections.emptyList(), new OrderStatsDTO());
+        }
+        LocalDateTime startTime = draft.getBeginTime() == null ? draft.getCreateTime() : draft.getBeginTime();
+        List<VoucherOrder> orders = orderAgentTool.queryOrders(Collections.singletonList(voucherId), startTime);
+        Map<Long, Voucher> voucherMap = Collections.singletonMap(voucherId, voucher);
+        OrderStatsDTO orderStats = orderAgentTool.buildOrderAnalysis(orders, voucherMap);
+        return new CampaignEffectContext(voucherId, voucher, orders, orderStats);
+    }
+
+    private AgentRecommendationDTO buildEffectRecommendation(AgentCampaignDraft draft, CampaignEffectContext context) {
+        OrderStatsDTO orderStats = context.getOrderStats();
+        String status = resolveCampaignStatus(draft);
+        if ("未开始".equals(status)) {
+            return buildRecommendation("seckill", "提前检查活动投放准备",
+                    "活动已创建但尚未开始，当前阶段重点不是加码投放，而是保证上线前的展示质量。",
+                    "建议检查标题、库存、开始时间和店铺详情页展示位置；如标题不够清晰，可生成一版更强调优惠力度的新草稿。",
+                    2, 1, "减少活动开始后的冷启动损耗，提升用户第一眼理解成本。");
+        }
+        if (orderStats.getTotalOrders() == 0) {
+            return buildRecommendation("seckill", "提高活动吸引力并重新投放",
+                    "活动已进入投放周期但暂未产生订单，说明曝光或优惠表达可能不足。",
+                    "建议生成一张标题更直接、售价略低、库存较小的秒杀券，用低风险方式重新测试转化。",
+                    1, 2, "用小库存控制成本，同时验证更强优惠表达是否能带来下单。");
+        }
+        if (orderStats.getPaidOrders() == 0) {
+            return buildRecommendation("voucher", "降低支付门槛促进成交",
+                    "已有用户下单但没有支付，说明用户对优惠感兴趣，但支付临门一脚不足。",
+                    "建议生成一张门槛更低的代金券，或将秒杀券售价下调后重新测试支付转化。",
+                    1, 2, "减少用户支付犹豫，优先把下单意愿转化为真实收入。");
+        }
+        if (orderStats.getUsedOrders() == 0) {
+            return buildRecommendation("voucher", "提升到店核销转化",
+                    "活动已有支付但暂未核销，说明用户购买后还没有完成到店消费。",
+                    "建议生成一张复购提醒型代金券，并配合到店核销提示，推动已购买用户到店。",
+                    2, 1, "提高支付后的到店率，让优惠券从收入进一步转化为真实消费体验。");
+        }
+        return buildRecommendation("seckill", "复制高效活动开启下一轮",
+                "活动已经产生支付和核销，说明当前优惠策略具备继续放大的基础。",
+                "建议复制本次活动结构，生成下一轮小库存秒杀券，并在库存不足前提前投放。",
+                1, 1, "延续有效策略，减少重新试错成本，提升连续活动运营效率。");
+    }
+
+    private Long saveEffectSuggestion(AgentCampaignDraft draft, CampaignEffectContext context,
+                                      AgentRecommendationDTO recommendation) {
+        AgentSuggestion suggestion = new AgentSuggestion()
+                .setId(nextAgentId())
+                .setSessionId(resolveDraftSessionId(draft))
+                .setShopId(draft.getShopId())
+                .setSuggestionType(recommendation.getType())
+                .setTitle(recommendation.getTitle())
+                .setSummary(recommendation.getReason())
+                .setContent(recommendation.getAction() + " 预期效果：" + recommendation.getExpectedEffect())
+                .setConfidenceScore(resolveEffectConfidence(context.getOrderStats()))
+                .setRiskLevel(recommendation.getRiskLevel() == null ? 1 : recommendation.getRiskLevel())
+                .setStatus(1);
+        agentSuggestionService.save(suggestion);
+        return suggestion.getId();
+    }
+
+    private AgentCampaignDraft createDraftFromEffectSuggestion(Long suggestionId,
+                                                               AgentRecommendationDTO recommendation,
+                                                               CampaignEffectContext context) {
+        AgentSuggestion suggestion = agentSuggestionService.getById(suggestionId);
+        Shop shop = shopAgentTool.getShop(suggestion.getShopId());
+        MerchantCampaignDraftRequest request = new MerchantCampaignDraftRequest();
+        request.setRecommendationType(recommendation.getType());
+        request.setRecommendationTitle(recommendation.getTitle());
+        request.setRecommendationReason(recommendation.getReason());
+        request.setRecommendationAction(recommendation.getAction());
+        applyEffectDraftDefaults(request, recommendation, context);
+
+        AgentCampaignDraft draft = voucherAgentTool.buildCampaignDraft(suggestion, shop, request, nextAgentId());
+        campaignDraftService.save(draft);
+        agentSuggestionService.updateById(new AgentSuggestion()
+                .setId(suggestionId)
+                .setStatus(2));
+        recordAction(suggestion.getSessionId(), shop.getId(), currentMerchantId(),
+                "create_effect_draft", "draft", draft.getId(), voucherAgentTool.draftToMap(draft));
+        return draft;
+    }
+
+    private void applyEffectDraftDefaults(MerchantCampaignDraftRequest request,
+                                          AgentRecommendationDTO recommendation,
+                                          CampaignEffectContext context) {
+        Voucher voucher = context.getVoucher();
+        long actualValue = voucher == null || voucher.getActualValue() == null ? 15000L : voucher.getActualValue();
+        long payValue = voucher == null || voucher.getPayValue() == null ? 8850L : voucher.getPayValue();
+        if ("voucher".equals(recommendation.getType())) {
+            request.setDraftType("voucher");
+            request.setPayValue(Math.max(100L, payValue - 1000L));
+            request.setActualValue(actualValue);
+        } else {
+            request.setDraftType("seckill");
+            request.setPayValue(Math.max(100L, payValue - 500L));
+            request.setActualValue(actualValue);
+            request.setStock(50);
+        }
+        request.setBeginTime(LocalDateTime.now().plusDays(1).withHour(18).withMinute(0).withSecond(0).withNano(0));
+        request.setEndTime(request.getBeginTime().plusDays(2));
+        request.setRules("{\"limitPerUser\":1,\"verify\":\"到店出示券码核销\",\"source\":\"agent-effect\"}");
+    }
+
+    private Long resolveDraftSessionId(AgentCampaignDraft draft) {
+        if (draft.getSuggestionId() == null) {
+            return null;
+        }
+        AgentSuggestion suggestion = agentSuggestionService.getById(draft.getSuggestionId());
+        return suggestion == null ? null : suggestion.getSessionId();
+    }
+
+    private BigDecimal resolveEffectConfidence(OrderStatsDTO orderStats) {
+        if (orderStats.getTotalOrders() == 0) {
+            return new BigDecimal("68.00");
+        }
+        if (orderStats.getPaidOrders() == 0 || orderStats.getUsedOrders() == 0) {
+            return new BigDecimal("76.00");
+        }
+        return new BigDecimal("84.00");
+    }
+
+    private Map<String, Object> voucherToEffectMap(Voucher voucher) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("id", voucher.getId());
+        row.put("voucherId", String.valueOf(voucher.getId()));
+        row.put("shopId", voucher.getShopId());
+        row.put("title", voucher.getTitle());
+        row.put("subTitle", voucher.getSubTitle());
+        row.put("type", voucher.getType());
+        row.put("typeName", voucher.getType() != null && voucher.getType() == 1 ? "秒杀券" : "普通代金券");
+        row.put("payValue", voucher.getPayValue());
+        row.put("actualValue", voucher.getActualValue());
+        row.put("status", voucher.getStatus());
+        row.put("beginTime", voucher.getBeginTime());
+        row.put("endTime", voucher.getEndTime());
+        return row;
+    }
+
+    private String resolveEffectLevel(OrderStatsDTO orderStats) {
+        if (orderStats.getPaidOrders() >= 10 && orderStats.getUsedOrders() >= 5) {
+            return "表现较好";
+        }
+        if (orderStats.getPaidOrders() > 0) {
+            return "已有成交";
+        }
+        return "待观察";
+    }
+
+    private String resolveCampaignStatus(AgentCampaignDraft draft) {
+        LocalDateTime now = LocalDateTime.now();
+        if (draft.getBeginTime() != null && draft.getBeginTime().isAfter(now)) {
+            return "未开始";
+        }
+        if (draft.getEndTime() != null && draft.getEndTime().isBefore(now)) {
+            return "已结束";
+        }
+        return "进行中";
+    }
+
+    private String buildCampaignEffectInsight(AgentCampaignDraft draft, Voucher voucher, OrderStatsDTO orderStats) {
+        if (draft.getBeginTime() != null && draft.getBeginTime().isAfter(LocalDateTime.now())) {
+            return "活动《" + voucher.getTitle() + "》已创建，将在" + draft.getBeginTime()
+                    + "开始。当前还没有进入投放周期，建议先检查活动标题、库存和展示位置。";
+        }
+        if (orderStats.getTotalOrders() == 0) {
+            return "活动《" + voucher.getTitle() + "》已创建，但暂未产生订单，建议检查店铺详情页曝光、活动标题和优惠力度。";
+        }
+        return "活动《" + voucher.getTitle() + "》已产生" + orderStats.getTotalOrders()
+                + "笔订单，其中已支付" + orderStats.getPaidOrders()
+                + "笔，已核销" + orderStats.getUsedOrders()
+                + "笔，预计收入¥" + formatFen(orderStats.getEstimatedRevenue())
+                + "。草稿策略是：" + (isBlank(draft.getReason()) ? "暂无策略说明" : draft.getReason());
+    }
+
+    private String buildCampaignNextAction(OrderStatsDTO orderStats) {
+        if (orderStats.getTotalOrders() == 0) {
+            return "建议先提高活动曝光，或让 Agent 重新生成更有吸引力的标题和优惠力度。";
+        }
+        if (orderStats.getPaidOrders() == 0) {
+            return "已有用户下单但未支付，建议检查支付转化链路，并考虑降低购买门槛。";
+        }
+        if (orderStats.getUsedOrders() == 0) {
+            return "已有支付但暂未核销，建议提醒用户到店使用，并关注核销转化。";
+        }
+        return "活动已有支付和核销，可以继续观察复购，并在库存不足前生成下一轮活动草稿。";
+    }
+
+    private Map<String, Object> parseJsonMap(String json) {
+        if (json == null || json.trim().isEmpty()) {
+            return Collections.emptyMap();
+        }
+        try {
+            return objectMapper.readValue(json, Map.class);
+        } catch (Exception e) {
+            return Collections.emptyMap();
+        }
+    }
+
+    private Long toLong(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number) {
+            return ((Number) value).longValue();
+        }
+        try {
+            return Long.valueOf(String.valueOf(value));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
     private DateRange resolveDateRange(String dateRange) {
         String code = dateRange == null || dateRange.trim().isEmpty() ? "LAST_30_DAYS" : dateRange.trim().toUpperCase();
         LocalDateTime end = LocalDateTime.now();
@@ -900,6 +1555,12 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         }
         if ("review_reply".equals(scene)) {
             return "评价回复";
+        }
+        if ("order_analysis".equals(scene)) {
+            return "订单分析";
+        }
+        if ("operation_chat".equals(scene)) {
+            return "运营对话";
         }
         return "未知场景";
     }
@@ -999,6 +1660,21 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         if ("confirm_campaign_draft".equals(actionType)) {
             return "确认创建活动";
         }
+        if ("query_campaign_effect".equals(actionType)) {
+            return "查看活动复盘";
+        }
+        if ("create_effect_suggestion".equals(actionType)) {
+            return "生成复盘建议";
+        }
+        if ("create_effect_draft".equals(actionType)) {
+            return "生成复盘草稿";
+        }
+        if ("agent_chat".equals(actionType)) {
+            return "Agent对话";
+        }
+        if ("create_chat_suggestion".equals(actionType)) {
+            return "生成对话建议";
+        }
         return "未知操作";
     }
 
@@ -1047,6 +1723,94 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         // Agent 模块涉及会话、消息、建议、草稿、审计多张表。统一使用同一个 keyPrefix，
         // 可以避免同一秒内不同业务 key 生成相同数值，前端调试和日志追踪会更直观。
         return redisIdWorker.nextId("agent");
+    }
+
+    private static class AgentContext {
+        private Shop shop;
+        private ShopProfileDTO shopProfile;
+        private OrderStatsDTO orderAnalysis;
+        private VoucherStatsDTO voucherAnalysis;
+        private ReviewStatsDTO reviewAnalysis;
+        private List<AgentRecommendationDTO> recommendations;
+
+        private Shop getShop() {
+            return shop;
+        }
+
+        private void setShop(Shop shop) {
+            this.shop = shop;
+        }
+
+        private ShopProfileDTO getShopProfile() {
+            return shopProfile;
+        }
+
+        private void setShopProfile(ShopProfileDTO shopProfile) {
+            this.shopProfile = shopProfile;
+        }
+
+        private OrderStatsDTO getOrderAnalysis() {
+            return orderAnalysis;
+        }
+
+        private void setOrderAnalysis(OrderStatsDTO orderAnalysis) {
+            this.orderAnalysis = orderAnalysis;
+        }
+
+        private VoucherStatsDTO getVoucherAnalysis() {
+            return voucherAnalysis;
+        }
+
+        private void setVoucherAnalysis(VoucherStatsDTO voucherAnalysis) {
+            this.voucherAnalysis = voucherAnalysis;
+        }
+
+        private ReviewStatsDTO getReviewAnalysis() {
+            return reviewAnalysis;
+        }
+
+        private void setReviewAnalysis(ReviewStatsDTO reviewAnalysis) {
+            this.reviewAnalysis = reviewAnalysis;
+        }
+
+        private List<AgentRecommendationDTO> getRecommendations() {
+            return recommendations;
+        }
+
+        private void setRecommendations(List<AgentRecommendationDTO> recommendations) {
+            this.recommendations = recommendations;
+        }
+    }
+
+    private static class CampaignEffectContext {
+        private final Long voucherId;
+        private final Voucher voucher;
+        private final List<VoucherOrder> orders;
+        private final OrderStatsDTO orderStats;
+
+        private CampaignEffectContext(Long voucherId, Voucher voucher,
+                                      List<VoucherOrder> orders, OrderStatsDTO orderStats) {
+            this.voucherId = voucherId;
+            this.voucher = voucher;
+            this.orders = orders;
+            this.orderStats = orderStats;
+        }
+
+        private Long getVoucherId() {
+            return voucherId;
+        }
+
+        private Voucher getVoucher() {
+            return voucher;
+        }
+
+        private List<VoucherOrder> getOrders() {
+            return orders;
+        }
+
+        private OrderStatsDTO getOrderStats() {
+            return orderStats;
+        }
     }
 
     private static class DateRange {
