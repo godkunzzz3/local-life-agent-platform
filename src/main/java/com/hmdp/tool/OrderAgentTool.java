@@ -1,5 +1,6 @@
 package com.hmdp.tool;
 
+import com.hmdp.dto.AgentToolDefinitionDTO;
 import com.hmdp.dto.OrderStatsDTO;
 import com.hmdp.entity.Voucher;
 import com.hmdp.entity.VoucherOrder;
@@ -22,10 +23,26 @@ import java.util.Map;
  * <p>负责查询和汇总店铺券订单数据。统计结果用 Map 返回，是为了方便后续直接序列化给大模型。</p>
  */
 @Component
-public class OrderAgentTool {
+public class OrderAgentTool implements AgentToolDescriptor {
 
     @Resource
     private IVoucherOrderService voucherOrderService;
+
+    @Override
+    public AgentToolDefinitionDTO definition() {
+        return new AgentToolDefinitionDTO()
+                .setName("order_analysis_tool")
+                .setDisplayName("订单分析工具")
+                .setDescription("按店铺优惠券查询订单，并汇总订单数、支付数、核销数、收入和转化率。")
+                .setCategory("order")
+                .setAccessLevel("read")
+                .setRequireMerchantConfirm(false)
+                .setWriteDatabase(false)
+                .setInputSchema("{\"voucherIds\":\"券ID集合\",\"startTime\":\"统计开始时间\"}")
+                .setOutputSchema("OrderStatsDTO：总订单、已支付、已核销、待支付、退款、预计收入、优惠成本、转化率")
+                .setRiskLevel("low")
+                .setExamples(Collections.singletonList("商家询问最近7天订单表现时，调用该工具生成订单分析"));
+    }
 
     /**
      * 按券ID集合查询指定时间之后的订单。

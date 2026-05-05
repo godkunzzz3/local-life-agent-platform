@@ -1,12 +1,14 @@
 package com.hmdp.tool;
 
+import com.hmdp.dto.AgentToolDefinitionDTO;
+import com.hmdp.dto.ShopProfileDTO;
 import com.hmdp.entity.Shop;
 import com.hmdp.service.IShopService;
 import org.springframework.stereotype.Component;
 
 import javax.annotation.Resource;
+import java.util.Collections;
 
-import com.hmdp.dto.ShopProfileDTO;
 /**
  * 店铺 Agent 工具。
  *
@@ -14,10 +16,26 @@ import com.hmdp.dto.ShopProfileDTO;
  * 当前先作为普通 Spring 组件给 Facade 使用，把店铺查询和画像组装从编排层拆出来。</p>
  */
 @Component
-public class ShopAgentTool {
+public class ShopAgentTool implements AgentToolDescriptor {
 
     @Resource
     private IShopService shopService;
+
+    @Override
+    public AgentToolDefinitionDTO definition() {
+        return new AgentToolDefinitionDTO()
+                .setName("shop_profile_tool")
+                .setDisplayName("店铺画像工具")
+                .setDescription("查询店铺基础信息，并组装成 Agent 可理解的店铺画像。")
+                .setCategory("shop")
+                .setAccessLevel("read")
+                .setRequireMerchantConfirm(false)
+                .setWriteDatabase(false)
+                .setInputSchema("{\"shopId\":\"店铺ID\"}")
+                .setOutputSchema("ShopProfileDTO：店铺名称、分类、商圈、地址、均价、评分、销量、评论数、营业时间")
+                .setRiskLevel("low")
+                .setExamples(Collections.singletonList("分析某个店铺经营情况前，先读取店铺画像"));
+    }
 
     /**
      * 查询店铺实体。

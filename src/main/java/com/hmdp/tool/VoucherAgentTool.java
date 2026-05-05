@@ -1,5 +1,6 @@
 package com.hmdp.tool;
 
+import com.hmdp.dto.AgentToolDefinitionDTO;
 import com.hmdp.dto.MerchantCampaignDraftRequest;
 import com.hmdp.dto.VoucherStatsDTO;
 import com.hmdp.entity.AgentCampaignDraft;
@@ -25,12 +26,28 @@ import java.util.Map;
  * 后续接入大模型时，创建真实活动仍然只能在商家确认后由业务流程调用。</p>
  */
 @Component
-public class VoucherAgentTool {
+public class VoucherAgentTool implements AgentToolDescriptor {
 
     @Resource
     private IVoucherService voucherService;
     @Resource
     private ISeckillVoucherService seckillVoucherService;
+
+    @Override
+    public AgentToolDefinitionDTO definition() {
+        return new AgentToolDefinitionDTO()
+                .setName("voucher_campaign_tool")
+                .setDisplayName("优惠券活动工具")
+                .setDescription("分析店铺优惠券结构，生成活动草稿，并在商家确认后创建真实优惠券。")
+                .setCategory("voucher")
+                .setAccessLevel("write")
+                .setRequireMerchantConfirm(true)
+                .setWriteDatabase(true)
+                .setInputSchema("{\"shopId\":\"店铺ID\",\"suggestionId\":\"建议ID\",\"draftRequest\":\"商家可覆盖的活动参数\"}")
+                .setOutputSchema("VoucherStatsDTO 或 AgentCampaignDraft 或 Voucher：券结构分析、活动草稿、真实优惠券")
+                .setRiskLevel("medium")
+                .setExamples(Collections.singletonList("Agent 发现转化不足时生成秒杀券草稿，商家确认后再创建真实券"));
+    }
 
     /**
      * 查询店铺所有优惠券。

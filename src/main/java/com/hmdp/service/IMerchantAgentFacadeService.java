@@ -13,6 +13,16 @@ import com.hmdp.dto.MerchantAgentChatRequest;
 public interface IMerchantAgentFacadeService {
 
     /**
+     * 查询 Agent 可用工具清单。
+     *
+     * <p>这个接口用于开发调试和后续大模型 Prompt 拼装，返回每个工具的职责、
+     * 入参、出参、风险等级和是否需要商家确认。</p>
+     *
+     * @return Agent 工具定义列表
+     */
+    Result queryAgentTools();
+
+    /**
      * 生成店铺运营报告。
      *
      * @param shopId 店铺ID

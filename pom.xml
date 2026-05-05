@@ -56,6 +56,18 @@
             <artifactId>hutool-all</artifactId>
             <version>5.7.17</version>
         </dependency>
+        <!-- LangChain4j DashScope/Qwen：用于接入阿里云百炼通义千问模型 -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-community-dashscope</artifactId>
+            <version>1.0.0-beta5</version>
+        </dependency>
+        <!-- DashScope SDK 依赖新版 Gson 的 ToNumberStrategy，显式声明避免被旧版本覆盖 -->
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+            <version>2.10.1</version>
+        </dependency>
     </dependencies>
 
     <build>

@@ -1,5 +1,6 @@
 package com.hmdp.service.impl;
 
+import com.hmdp.agent.MerchantAgentModelClient;
 import com.hmdp.dto.*;
 import com.hmdp.entity.AgentActionLog;
 import com.hmdp.entity.AgentCampaignDraft;
@@ -24,6 +25,8 @@ import com.hmdp.service.IMerchantService;
 import com.hmdp.tool.OrderAgentTool;
 import com.hmdp.tool.ReviewAgentTool;
 import com.hmdp.tool.ShopAgentTool;
+import com.hmdp.tool.AgentToolRegistry;
+import com.hmdp.tool.AgentToolExecutor;
 import com.hmdp.tool.VoucherAgentTool;
 import com.hmdp.utils.RedisIdWorker;
 import com.hmdp.utils.UserHolder;
@@ -85,6 +88,17 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     private ObjectMapper objectMapper;
     @Resource
     private StringRedisTemplate stringRedisTemplate;
+    @Resource
+    private AgentToolRegistry agentToolRegistry;
+    @Resource
+    private AgentToolExecutor agentToolExecutor;
+    @Resource
+    private MerchantAgentModelClient merchantAgentModelClient;
+
+    @Override
+    public Result queryAgentTools() {
+        return Result.ok(agentToolRegistry.listDefinitions());
+    }
 
     @Override
     @Transactional
@@ -701,6 +715,15 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         String userMessage = request.getMessage().trim();
         String intent = resolveChatIntent(userMessage);
         DateRange range = resolveDateRange(resolveChatDateRange(userMessage, request.getDateRange()));
+        String toolName = resolveChatToolName(intent);
+        AgentPromptContextDTO promptContext = buildPromptContext(shop, userMessage, intent, toolName, range);
+        List<AgentFlowStepDTO> flowTrace = new ArrayList<>();
+        flowTrace.add(buildFlowStep("receive_message", "接收商家问题", "success",
+                "收到商家输入：" + userMessage, null, null));
+        flowTrace.add(buildFlowStep("understand_intent", "识别业务意图", "success",
+                "识别为：" + resolveChatIntentName(intent), null, null));
+        flowTrace.add(buildFlowStep("select_tool", "选择 Agent 工具", "success",
+                "选择工具：" + toolName, toolName, null));
         AgentContext context = buildAgentContext(shop, range);
 
         Long sessionId = nextAgentId();
@@ -716,21 +739,47 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
 
         // 对话链路先保存用户消息，再保存工具结果和助手回复，后续接大模型时可作为上下文记忆。
         saveMessage(sessionId, shopId, "user", userMessage, null, null, null);
+        Map<String, Object> toolArgs = buildChatToolArgs(shopId, intent, range);
         Map<String, Object> toolResult = buildChatToolResult(context, intent, range);
-        saveMessage(sessionId, shopId, "tool", "已调用 " + resolveChatToolName(intent), resolveChatToolName(intent),
-                toSimpleJson(buildChatToolArgs(shopId, intent, range)), toSimpleJson(toolResult));
+        AgentToolExecutionResultDTO toolExecution = agentToolExecutor.wrapResult(
+                toolName, toolArgs, toolResult);
+        flowTrace.add(buildFlowStep("execute_tool", "执行工具并读取数据",
+                Boolean.TRUE.equals(toolExecution.getSuccess()) ? "success" : "failed",
+                Boolean.TRUE.equals(toolExecution.getSuccess())
+                        ? "工具执行成功，已生成结构化工具结果"
+                        : toolExecution.getErrorMsg(),
+                toolExecution.getToolName(), toolExecution.getCostMillis()));
+        saveMessage(sessionId, shopId, "tool", "已调用 " + toolExecution.getToolName(), toolExecution.getToolName(),
+                toolExecution.getToolArgs(), toSimpleJson(toolExecution));
 
         AgentRecommendationDTO recommendation = selectRecommendationByIntent(context.getRecommendations(), intent);
         Long suggestionId = null;
         AgentCampaignDraft draft = null;
         if (shouldSaveSuggestion(intent)) {
             suggestionId = saveChatSuggestion(sessionId, shopId, intent, recommendation, context);
+            flowTrace.add(buildFlowStep("create_suggestion", "生成运营建议", "success",
+                    "已生成可追踪的 Agent 建议：" + recommendation.getTitle(), null, null));
+        } else {
+            flowTrace.add(buildFlowStep("create_suggestion", "生成运营建议", "skipped",
+                    "订单分析类问题只返回分析结果，不额外创建建议卡片", null, null));
         }
         if (suggestionId != null && shouldAutoCreateDraft(userMessage, request, intent)) {
             draft = createDraftFromChatSuggestion(suggestionId, recommendation, shop);
+            flowTrace.add(buildFlowStep("create_draft", "生成活动草稿", "success",
+                    "已生成待商家确认的活动草稿", "voucher_campaign_tool", null));
+        } else {
+            flowTrace.add(buildFlowStep("create_draft", "生成活动草稿", "skipped",
+                    "本轮未触发自动生成草稿，真实活动仍需商家确认", "voucher_campaign_tool", null));
         }
 
-        String reply = buildChatReply(intent, context, recommendation, draft);
+        AgentModelResponseDTO modelResponse = merchantAgentModelClient.generateReply(new AgentModelRequestDTO()
+                .setPromptContext(promptContext)
+                .setToolExecution(toolExecution)
+                .setRecommendation(recommendation)
+                .setDraft(draft));
+        String reply = modelResponse.getReply();
+        flowTrace.add(buildFlowStep("generate_reply", "生成回复", "success",
+                "已通过模型客户端 " + modelResponse.getProvider() + " 生成回复", null, null));
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("sessionId", String.valueOf(sessionId));
         result.put("shopId", shopId);
@@ -741,10 +790,47 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         result.put("draftId", draft == null ? null : String.valueOf(draft.getId()));
         result.put("draft", draft == null ? null : voucherAgentTool.draftToMap(draft));
         result.put("toolResult", toolResult);
+        result.put("toolExecution", toolExecution);
+        result.put("promptContext", promptContext);
+        result.put("flowTrace", flowTrace);
+        result.put("modelResponse", modelResponse);
 
         saveMessage(sessionId, shopId, "assistant", reply, null, null, toSimpleJson(result));
         recordAction(sessionId, shopId, merchantId, "agent_chat", "session", sessionId, result);
         return Result.ok(result);
+    }
+
+    private AgentPromptContextDTO buildPromptContext(Shop shop, String userMessage, String intent,
+                                                     String toolName, DateRange range) {
+        List<String> constraints = new ArrayList<>();
+        constraints.add("只能基于当前店铺数据、订单数据、优惠券数据和评价数据给出建议");
+        constraints.add("涉及创建真实优惠券或秒杀券时，必须先生成草稿，由商家确认后才能写入业务表");
+        constraints.add("回复要说明关键指标和下一步动作，避免只给空泛建议");
+        constraints.add("如果数据不足，要明确提示数据不足，而不是编造结论");
+
+        return new AgentPromptContextDTO()
+                .setScene("merchant_operation_chat")
+                .setSystemPrompt("你是本地生活商家运营 Agent，负责分析店铺经营数据、选择合适工具、生成可执行但需商家确认的运营建议。")
+                .setUserMessage(userMessage)
+                .setIntent(intent)
+                .setIntentName(resolveChatIntentName(intent))
+                .setSelectedToolName(toolName)
+                .setDateRange(range.getCode())
+                .setShopId(shop.getId())
+                .setShopName(shop.getName())
+                .setConstraints(constraints)
+                .setOutputFormat("返回结构化结果：intent、toolExecution、reply、suggestionId、draftId、flowTrace");
+    }
+
+    private AgentFlowStepDTO buildFlowStep(String stepCode, String stepName, String status,
+                                           String detail, String toolName, Long costMillis) {
+        return new AgentFlowStepDTO()
+                .setStepCode(stepCode)
+                .setStepName(stepName)
+                .setStatus(status)
+                .setDetail(detail)
+                .setToolName(toolName)
+                .setCostMillis(costMillis);
     }
 
     private AgentContext buildAgentContext(Shop shop, DateRange range) {
@@ -954,15 +1040,15 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
 
     private String resolveChatToolName(String intent) {
         if ("order_analysis".equals(intent)) {
-            return "OrderAgentTool";
+            return "order_analysis_tool";
         }
         if ("voucher_plan".equals(intent)) {
-            return "VoucherAgentTool";
+            return "voucher_campaign_tool";
         }
         if ("review_analysis".equals(intent)) {
-            return "ReviewAgentTool";
+            return "review_content_tool";
         }
-        return "MerchantOperationAgent";
+        return "operation_diagnosis_tool";
     }
 
     private String resolveChatIntentName(String intent) {
@@ -1709,6 +1795,17 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     }
 
     private String toSimpleJson(Map<String, Object> data) {
+        if (data == null) {
+            return "{}";
+        }
+        try {
+            return objectMapper.writeValueAsString(data);
+        } catch (JsonProcessingException e) {
+            return data.toString();
+        }
+    }
+
+    private String toSimpleJson(Object data) {
         if (data == null) {
             return "{}";
         }

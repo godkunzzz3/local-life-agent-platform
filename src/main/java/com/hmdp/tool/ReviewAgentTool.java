@@ -1,5 +1,7 @@
 package com.hmdp.tool;
 
+import com.hmdp.dto.AgentToolDefinitionDTO;
+import com.hmdp.dto.ReviewStatsDTO;
 import com.hmdp.entity.Blog;
 import com.hmdp.entity.BlogComments;
 import com.hmdp.service.IBlogCommentsService;
@@ -13,7 +15,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
-import com.hmdp.dto.ReviewStatsDTO;
 /**
  * 评价与内容 Agent 工具。
  *
@@ -21,12 +22,28 @@ import com.hmdp.dto.ReviewStatsDTO;
  * Agent 易理解的指标：笔记数、点赞数、评论数、近期内容摘要和互动等级。</p>
  */
 @Component
-public class ReviewAgentTool {
+public class ReviewAgentTool implements AgentToolDescriptor {
 
     @Resource
     private IBlogService blogService;
     @Resource
     private IBlogCommentsService blogCommentsService;
+
+    @Override
+    public AgentToolDefinitionDTO definition() {
+        return new AgentToolDefinitionDTO()
+                .setName("review_content_tool")
+                .setDisplayName("评价内容分析工具")
+                .setDescription("查询店铺探店笔记和评论，汇总内容数量、点赞、评论和互动等级。")
+                .setCategory("review")
+                .setAccessLevel("read")
+                .setRequireMerchantConfirm(false)
+                .setWriteDatabase(false)
+                .setInputSchema("{\"shopId\":\"店铺ID\"}")
+                .setOutputSchema("ReviewStatsDTO：笔记数、点赞数、评论数、近期内容摘要、互动等级")
+                .setRiskLevel("low")
+                .setExamples(Collections.singletonList("商家询问评价和内容表现时，调用该工具生成内容侧诊断"));
+    }
 
     /**
      * 查询店铺探店笔记。

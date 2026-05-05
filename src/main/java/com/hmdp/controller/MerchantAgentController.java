@@ -23,6 +23,17 @@ public class MerchantAgentController {
     private IMerchantAgentFacadeService merchantAgentFacadeService;
 
     /**
+     * 查询 Agent 工具清单。
+     *
+     * <p>这个接口先服务于学习和调试：你可以看到当前 Agent 拥有哪些工具、
+     * 哪些工具只读、哪些工具会写库、哪些动作必须商家确认。</p>
+     */
+    @GetMapping("/tools")
+    public Result queryAgentTools() {
+        return merchantAgentFacadeService.queryAgentTools();
+    }
+
+    /**
      * 生成店铺运营报告。
      *
      * <p>这是 MerchantOperationAgent 的第一个接口。当前先使用 Java 规则生成报告，

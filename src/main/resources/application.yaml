@@ -24,3 +24,15 @@ mybatis-plus:
 logging:
   level:
     com.hmdp: debug
+merchant-agent:
+  model:
+    # rule：规则版兜底；langchain4j：通过 LangChain4j 调用阿里云百炼 / DashScope 通义千问。
+    provider: langchain4j
+    # 推荐放到环境变量 DASHSCOPE_API_KEY，避免把真实 Key 提交到 Git。
+    api-key: ${DASHSCOPE_API_KEY:}
+    # QwenChatModel 默认会使用 DashScope 服务地址；一般不需要配置 base-url。
+    base-url:
+    # 百炼可按账号开通情况选择 qwen-turbo、qwen-plus 等模型。
+    model-name: qwen-turbo
+    temperature: 0.3
+    max-tokens: 800
