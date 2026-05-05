@@ -25,6 +25,9 @@ logging:
   level:
     com.hmdp: debug
 merchant-agent:
+  prompt:
+    # Prompt 模板版本。每次调整 Prompt 规则时建议递增，方便排查模型回复差异。
+    version: merchant-agent-v1
   model:
     # rule：规则版兜底；langchain4j：通过 LangChain4j 调用阿里云百炼 / DashScope 通义千问。
     provider: langchain4j

@@ -1,6 +1,7 @@
 package com.hmdp.service.impl;
 
 import com.hmdp.agent.MerchantAgentModelClient;
+import com.hmdp.agent.MerchantAgentPromptTemplateService;
 import com.hmdp.dto.*;
 import com.hmdp.entity.AgentActionLog;
 import com.hmdp.entity.AgentCampaignDraft;
@@ -94,6 +95,8 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     private AgentToolExecutor agentToolExecutor;
     @Resource
     private MerchantAgentModelClient merchantAgentModelClient;
+    @Resource
+    private MerchantAgentPromptTemplateService promptTemplateService;
 
     @Override
     public Result queryAgentTools() {
@@ -724,7 +727,9 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
                 "识别为：" + resolveChatIntentName(intent), null, null));
         flowTrace.add(buildFlowStep("select_tool", "选择 Agent 工具", "success",
                 "选择工具：" + toolName, toolName, null));
-        AgentContext context = buildAgentContext(shop, range);
+        AgentContext context = shouldUseLightweightContext(intent)
+                ? buildLightweightAgentContext(shop)
+                : buildAgentContext(shop, range);
 
         Long sessionId = nextAgentId();
         Long merchantId = currentMerchantId();
@@ -777,6 +782,7 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
                 .setToolExecution(toolExecution)
                 .setRecommendation(recommendation)
                 .setDraft(draft));
+        recordModelCall(sessionId, shopId, merchantId, promptContext, toolExecution, modelResponse);
         String reply = modelResponse.getReply();
         flowTrace.add(buildFlowStep("generate_reply", "生成回复", "success",
                 "已通过模型客户端 " + modelResponse.getProvider() + " 生成回复", null, null));
@@ -803,6 +809,8 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     private AgentPromptContextDTO buildPromptContext(Shop shop, String userMessage, String intent,
                                                      String toolName, DateRange range) {
         List<String> constraints = new ArrayList<>();
+        constraints.add("先判断商家问题类型，再决定是否需要经营数据分析");
+        constraints.add("身份、模型、能力说明类问题不要展开订单或店铺经营报告");
         constraints.add("只能基于当前店铺数据、订单数据、优惠券数据和评价数据给出建议");
         constraints.add("涉及创建真实优惠券或秒杀券时，必须先生成草稿，由商家确认后才能写入业务表");
         constraints.add("回复要说明关键指标和下一步动作，避免只给空泛建议");
@@ -810,7 +818,7 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
 
         return new AgentPromptContextDTO()
                 .setScene("merchant_operation_chat")
-                .setSystemPrompt("你是本地生活商家运营 Agent，负责分析店铺经营数据、选择合适工具、生成可执行但需商家确认的运营建议。")
+                .setSystemPrompt(promptTemplateService.systemPrompt())
                 .setUserMessage(userMessage)
                 .setIntent(intent)
                 .setIntentName(resolveChatIntentName(intent))
@@ -819,7 +827,7 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
                 .setShopId(shop.getId())
                 .setShopName(shop.getName())
                 .setConstraints(constraints)
-                .setOutputFormat("返回结构化结果：intent、toolExecution、reply、suggestionId、draftId、flowTrace");
+                .setOutputFormat(promptTemplateService.outputRequirement(intent));
     }
 
     private AgentFlowStepDTO buildFlowStep(String stepCode, String stepName, String status,
@@ -852,8 +860,19 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         return context;
     }
 
+    private AgentContext buildLightweightAgentContext(Shop shop) {
+        AgentContext context = new AgentContext();
+        context.setShop(shop);
+        context.setShopProfile(shopAgentTool.buildShopProfile(shop));
+        context.setRecommendations(Collections.emptyList());
+        return context;
+    }
+
     private String resolveChatIntent(String message) {
         String text = message == null ? "" : message;
+        if (containsAny(text, "你是什么", "什么模型", "哪个模型", "你是谁", "能做什么", "介绍一下", "你的能力", "怎么用")) {
+            return "identity";
+        }
         if (containsAny(text, "秒杀", "优惠券", "代金券", "活动", "拉新", "复购", "草稿")) {
             return "voucher_plan";
         }
@@ -901,6 +920,10 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         Map<String, Object> toolResult = new LinkedHashMap<>();
         toolResult.put("dateRange", range.getCode());
         toolResult.put("shopProfile", context.getShopProfile());
+        if ("identity".equals(intent)) {
+            toolResult.put("agentProfile", buildAgentProfile());
+            return toolResult;
+        }
         if ("order_analysis".equals(intent)) {
             toolResult.put("orderAnalysis", context.getOrderAnalysis());
             return toolResult;
@@ -923,6 +946,9 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     }
 
     private AgentRecommendationDTO selectRecommendationByIntent(List<AgentRecommendationDTO> recommendations, String intent) {
+        if ("identity".equals(intent)) {
+            return null;
+        }
         if (recommendations == null || recommendations.isEmpty()) {
             return buildRecommendation("operation", "继续观察经营数据",
                     "当前数据暂未触发强规则建议。",
@@ -1039,6 +1065,9 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     }
 
     private String resolveChatToolName(String intent) {
+        if ("identity".equals(intent)) {
+            return "agent_profile_tool";
+        }
         if ("order_analysis".equals(intent)) {
             return "order_analysis_tool";
         }
@@ -1052,6 +1081,9 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     }
 
     private String resolveChatIntentName(String intent) {
+        if ("identity".equals(intent)) {
+            return "身份能力说明";
+        }
         if ("order_analysis".equals(intent)) {
             return "订单分析";
         }
@@ -1062,6 +1094,26 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
             return "评价内容分析";
         }
         return "综合运营咨询";
+    }
+
+    private boolean shouldUseLightweightContext(String intent) {
+        return "identity".equals(intent);
+    }
+
+    private Map<String, Object> buildAgentProfile() {
+        Map<String, Object> profile = new LinkedHashMap<>();
+        profile.put("name", "黑马点评商家运营 Agent");
+        profile.put("position", "本地生活商家运营助手");
+        profile.put("modelProvider", "LangChain4j + DashScope Qwen，异常时自动降级规则版");
+        profile.put("capabilities", java.util.Arrays.asList(
+                "分析店铺订单、支付转化和预计收入",
+                "诊断优惠券和秒杀券投放结构",
+                "分析评价、探店内容和用户互动",
+                "生成需要商家确认的优惠券或秒杀券草稿",
+                "记录工具调用流程和操作审计"
+        ));
+        profile.put("safetyRule", "不会直接创建真实活动，必须先生成草稿并由商家确认");
+        return profile;
     }
 
     private boolean containsAny(String text, String... keywords) {
@@ -1331,6 +1383,43 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
                 .setTargetId(targetId)
                 .setResultData(toSimpleJson(result))
                 .setStatus(1);
+        agentActionLogService.save(actionLog);
+    }
+
+    private void recordModelCall(Long sessionId, Long shopId, Long merchantId,
+                                 AgentPromptContextDTO promptContext,
+                                 AgentToolExecutionResultDTO toolExecution,
+                                 AgentModelResponseDTO modelResponse) {
+        Map<String, Object> requestData = new LinkedHashMap<>();
+        requestData.put("intent", promptContext.getIntent());
+        requestData.put("intentName", promptContext.getIntentName());
+        requestData.put("selectedToolName", promptContext.getSelectedToolName());
+        requestData.put("dateRange", promptContext.getDateRange());
+        requestData.put("promptVersion", modelResponse.getPromptVersion());
+        requestData.put("toolName", toolExecution == null ? null : toolExecution.getToolName());
+
+        Map<String, Object> resultData = new LinkedHashMap<>();
+        resultData.put("provider", modelResponse.getProvider());
+        resultData.put("modelName", modelResponse.getModelName());
+        resultData.put("promptVersion", modelResponse.getPromptVersion());
+        resultData.put("costMillis", modelResponse.getCostMillis());
+        resultData.put("fallback", modelResponse.getFallback());
+        resultData.put("confidence", modelResponse.getConfidence());
+        resultData.put("reasoning", modelResponse.getReasoning());
+
+        AgentActionLog actionLog = new AgentActionLog()
+                .setId(nextAgentId())
+                .setSessionId(sessionId)
+                .setShopId(shopId)
+                .setOperatorId(merchantId)
+                .setOperatorType("agent")
+                .setActionType("model_call")
+                .setTargetType("model")
+                .setTargetId(sessionId)
+                .setRequestData(toSimpleJson(requestData))
+                .setResultData(toSimpleJson(resultData))
+                .setStatus(Boolean.TRUE.equals(modelResponse.getFallback()) ? 2 : 1)
+                .setErrorMsg(Boolean.TRUE.equals(modelResponse.getFallback()) ? modelResponse.getReasoning() : null);
         agentActionLogService.save(actionLog);
     }
 
@@ -1755,6 +1844,9 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         if ("create_effect_draft".equals(actionType)) {
             return "生成复盘草稿";
         }
+        if ("model_call".equals(actionType)) {
+            return "模型调用";
+        }
         if ("agent_chat".equals(actionType)) {
             return "Agent对话";
         }
@@ -1776,6 +1868,9 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         }
         if ("seckill".equals(targetType)) {
             return "秒杀券";
+        }
+        if ("model".equals(targetType)) {
+            return "大模型";
         }
         return "未知目标";
     }

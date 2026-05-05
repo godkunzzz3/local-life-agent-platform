@@ -25,6 +25,7 @@ public class RuleBasedMerchantAgentModelClient implements MerchantAgentModelClie
 
     @Override
     public AgentModelResponseDTO generateReply(AgentModelRequestDTO request) {
+        long start = System.currentTimeMillis();
         String intent = request.getPromptContext().getIntent();
         Map<String, Object> toolData = getToolData(request);
         AgentRecommendationDTO recommendation = request.getRecommendation();
@@ -35,6 +36,9 @@ public class RuleBasedMerchantAgentModelClient implements MerchantAgentModelClie
                 .setReply(reply)
                 .setProvider("rule")
                 .setModelName("rule-based-merchant-agent-v1")
+                .setPromptVersion("merchant-agent-v1")
+                .setCostMillis(System.currentTimeMillis() - start)
+                .setFallback(true)
                 .setReasoning(buildReasoning(intent, request))
                 .setRecommendedAction(recommendation == null ? null : recommendation.getAction())
                 .setConfidence(78);
@@ -56,6 +60,11 @@ public class RuleBasedMerchantAgentModelClient implements MerchantAgentModelClie
         VoucherStatsDTO voucher = (VoucherStatsDTO) toolData.get("voucherAnalysis");
         ReviewStatsDTO review = (ReviewStatsDTO) toolData.get("reviewAnalysis");
 
+        if ("identity".equals(intent)) {
+            return "我是黑马点评商家运营 Agent，当前可以通过 LangChain4j 接入 Qwen 模型，模型不可用时会自动降级为规则版回复。"
+                    + "我能读取当前商家的订单、优惠券、评价和店铺基础数据，帮助你做运营分析、活动建议和待确认草稿。"
+                    + "我不会直接创建真实优惠券或秒杀券，所有活动都需要先生成草稿，再由商家确认执行。";
+        }
         if ("order_analysis".equals(intent) && order != null) {
             return shopName + "当前周期共有券订单" + order.getTotalOrders()
                     + "笔，已支付" + order.getPaidOrders()

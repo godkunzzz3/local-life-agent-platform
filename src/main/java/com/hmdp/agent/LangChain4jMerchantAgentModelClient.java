@@ -41,15 +41,21 @@ public class LangChain4jMerchantAgentModelClient implements MerchantAgentModelCl
 
     @Resource
     private ObjectMapper objectMapper;
+    @Resource
+    private MerchantAgentPromptTemplateService promptTemplateService;
 
     private final RuleBasedMerchantAgentModelClient fallbackClient = new RuleBasedMerchantAgentModelClient();
 
     @Override
     public AgentModelResponseDTO generateReply(AgentModelRequestDTO request) {
+        long start = System.currentTimeMillis();
         if (isBlank(apiKey)) {
             AgentModelResponseDTO fallback = fallbackClient.generateReply(request);
             fallback.setProvider("rule_fallback")
                     .setModelName("rule-based-merchant-agent-v1")
+                    .setPromptVersion(promptTemplateService.promptVersion())
+                    .setCostMillis(System.currentTimeMillis() - start)
+                    .setFallback(true)
                     .setReasoning("未配置 DASHSCOPE_API_KEY，已自动使用规则版回复。");
             return fallback;
         }
@@ -62,6 +68,9 @@ public class LangChain4jMerchantAgentModelClient implements MerchantAgentModelCl
                     .setReply(reply)
                     .setProvider("langchain4j")
                     .setModelName(modelName)
+                    .setPromptVersion(promptTemplateService.promptVersion())
+                    .setCostMillis(System.currentTimeMillis() - start)
+                    .setFallback(false)
                     .setReasoning("LangChain4j 调用 DashScope QwenChatModel，根据 PromptContext 和 ToolExecution 生成回复。")
                     .setRecommendedAction(request.getRecommendation() == null ? null : request.getRecommendation().getAction())
                     .setConfidence(82);
@@ -71,6 +80,9 @@ public class LangChain4jMerchantAgentModelClient implements MerchantAgentModelCl
                     e.getClass().getSimpleName(), e.getMessage());
             AgentModelResponseDTO fallback = fallbackClient.generateReply(request);
             fallback.setProvider("rule_fallback")
+                    .setPromptVersion(promptTemplateService.promptVersion())
+                    .setCostMillis(System.currentTimeMillis() - start)
+                    .setFallback(true)
                     .setReasoning("LangChain4j 调用失败，已降级规则版回复：" + e.getMessage());
             return fallback;
         }
@@ -89,26 +101,28 @@ public class LangChain4jMerchantAgentModelClient implements MerchantAgentModelCl
     }
 
     private String buildPrompt(AgentModelRequestDTO request) {
-        StringBuilder prompt = new StringBuilder();
-        prompt.append(request.getPromptContext().getSystemPrompt()).append("\n\n");
-        prompt.append("【商家问题】\n")
-                .append(request.getPromptContext().getUserMessage()).append("\n\n");
-        prompt.append("【业务意图】\n")
-                .append(request.getPromptContext().getIntentName())
-                .append("，工具：")
-                .append(request.getPromptContext().getSelectedToolName()).append("\n\n");
-        prompt.append("【工具结果】\n")
-                .append(toJson(request.getToolExecution().getData())).append("\n\n");
-        prompt.append("【推荐动作】\n")
-                .append(request.getRecommendation() == null ? "暂无" : toJson(request.getRecommendation())).append("\n\n");
-        prompt.append("【约束】\n");
-        for (String constraint : request.getPromptContext().getConstraints()) {
-            prompt.append("- ").append(constraint).append("\n");
+        String prompt = promptTemplateService.chatFrame();
+        return prompt
+                .replace("{{systemPrompt}}", promptTemplateService.systemPrompt())
+                .replace("{{behaviorBoundary}}", promptTemplateService.behaviorBoundary())
+                .replace("{{userMessage}}", request.getPromptContext().getUserMessage())
+                .replace("{{intentName}}", request.getPromptContext().getIntentName())
+                .replace("{{toolName}}", request.getPromptContext().getSelectedToolName())
+                .replace("{{toolResult}}", toJson(request.getToolExecution().getData()))
+                .replace("{{recommendation}}", request.getRecommendation() == null ? "暂无" : toJson(request.getRecommendation()))
+                .replace("{{constraints}}", buildConstraints(request))
+                .replace("{{outputRequirement}}", promptTemplateService.outputRequirement(request.getPromptContext().getIntent()));
+    }
+
+    private String buildConstraints(AgentModelRequestDTO request) {
+        StringBuilder builder = new StringBuilder();
+        if (request.getPromptContext().getConstraints() == null) {
+            return "暂无";
         }
-        prompt.append("\n【输出要求】\n");
-        prompt.append("请用中文回复商家，语气专业、简洁，必须包含关键数据、判断结论和下一步动作。");
-        prompt.append("不要编造工具结果中不存在的数据；涉及创建真实优惠券时，只能说明需要商家确认草稿。");
-        return prompt.toString();
+        for (String constraint : request.getPromptContext().getConstraints()) {
+            builder.append("- ").append(constraint).append("\n");
+        }
+        return builder.toString().trim();
     }
 
     private String toJson(Object value) {
