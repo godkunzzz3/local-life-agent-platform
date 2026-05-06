@@ -171,4 +171,17 @@ public class MerchantAgentController {
                                 @RequestBody MerchantAgentChatRequest request) {
         return merchantAgentFacadeService.chatWithAgent(shopId, request);
     }
+
+    /**
+     * LangChain4j Tool Calling 学习版对话。
+     *
+     * <p>这个接口用于学习“模型自己选择工具”的 Agent 流程。
+     * 第一版只开放只读工具，不创建优惠券、不修改订单、不改库存。</p>
+     */
+    @PostMapping("/shops/{shopId}/tool-chat")
+    public Result toolChatWithAgent(@PathVariable("shopId") Long shopId,
+                                    @RequestBody MerchantAgentChatRequest request) {
+        return merchantAgentFacadeService.toolChatWithAgent(shopId, request);
+    }
+
 }

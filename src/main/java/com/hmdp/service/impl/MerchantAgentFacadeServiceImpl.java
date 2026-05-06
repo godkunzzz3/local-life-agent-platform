@@ -2,6 +2,7 @@ package com.hmdp.service.impl;
 
 import com.hmdp.agent.MerchantAgentModelClient;
 import com.hmdp.agent.MerchantAgentPromptTemplateService;
+import com.hmdp.agent.MerchantAgentToolCallingService;
 import com.hmdp.dto.*;
 import com.hmdp.entity.AgentActionLog;
 import com.hmdp.entity.AgentCampaignDraft;
@@ -97,6 +98,8 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     private MerchantAgentModelClient merchantAgentModelClient;
     @Resource
     private MerchantAgentPromptTemplateService promptTemplateService;
+    @Resource
+    private MerchantAgentToolCallingService toolCallingService;
 
     @Override
     public Result queryAgentTools() {
@@ -731,16 +734,12 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
                 ? buildLightweightAgentContext(shop)
                 : buildAgentContext(shop, range);
 
-        Long sessionId = nextAgentId();
         Long merchantId = currentMerchantId();
-        AgentSession session = new AgentSession()
-                .setId(sessionId)
-                .setShopId(shopId)
-                .setMerchantId(merchantId)
-                .setTitle(buildChatSessionTitle(userMessage))
-                .setScene(intent)
-                .setStatus(2);
-        agentSessionService.save(session);
+        AgentSession session = resolveChatSession(shopId, merchantId, userMessage, intent, request);
+        if (session == null) {
+            return Result.fail("会话不存在或不属于当前店铺");
+        }
+        Long sessionId = session.getId();
 
         // 对话链路先保存用户消息，再保存工具结果和助手回复，后续接大模型时可作为上下文记忆。
         saveMessage(sessionId, shopId, "user", userMessage, null, null, null);
@@ -804,6 +803,52 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         saveMessage(sessionId, shopId, "assistant", reply, null, null, toSimpleJson(result));
         recordAction(sessionId, shopId, merchantId, "agent_chat", "session", sessionId, result);
         return Result.ok(result);
+    }
+
+    @Override
+    @Transactional
+    public Result toolChatWithAgent(Long shopId, MerchantAgentChatRequest request) {
+        if (shopId == null) {
+            return Result.fail("店铺id不能为空");
+        }
+        if (request == null || isBlank(request.getMessage())) {
+            return Result.fail("请输入要咨询 Agent 的问题");
+        }
+        Shop shop = shopAgentTool.getShop(shopId);
+        if (shop == null) {
+            return Result.fail("店铺不存在");
+        }
+        if (!merchantService.hasCurrentUserShopPermission(shopId)) {
+            return Result.fail("无权管理该店铺");
+        }
+
+        Long merchantId = currentMerchantId();
+        String userMessage = request.getMessage().trim();
+        AgentSession session = resolveChatSession(shopId, merchantId, userMessage, "tool_calling_chat", request);
+        if (session == null) {
+            return Result.fail("会话不存在或不属于当前店铺");
+        }
+        Long sessionId = session.getId();
+        List<AgentMessage> historyMessages = loadRecentNaturalMessages(sessionId);
+        saveMessage(sessionId, shopId, "user", userMessage, null, null, null);
+
+        try {
+            Map<String, Object> toolCallingResult = toolCallingService.chat(shop, request, historyMessages);
+            String reply = String.valueOf(toolCallingResult.getOrDefault("reply", toolCallingResult.get("answer")));
+            toolCallingResult.put("sessionId", String.valueOf(sessionId));
+            toolCallingResult.put("shopId", shopId);
+            toolCallingResult.put("scene", "tool_calling_chat");
+
+            saveMessage(sessionId, shopId, "assistant", reply, null, null, toSimpleJson(toolCallingResult));
+            recordAction(sessionId, shopId, merchantId, "tool_calling_chat", "session", sessionId, toolCallingResult);
+            return Result.ok(toolCallingResult);
+        } catch (Exception e) {
+            Map<String, Object> errorResult = new LinkedHashMap<>();
+            errorResult.put("message", request.getMessage());
+            errorResult.put("error", e.getMessage());
+            recordFailedAction(sessionId, shopId, merchantId, "tool_calling_chat", "session", sessionId, errorResult, e.getMessage());
+            return Result.fail("Tool Calling 调用失败：" + e.getMessage());
+        }
     }
 
     private AgentPromptContextDTO buildPromptContext(Shop shop, String userMessage, String intent,
@@ -1370,6 +1415,57 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         agentMessageService.save(message);
     }
 
+    private AgentSession resolveChatSession(Long shopId, Long merchantId, String userMessage,
+                                            String scene, MerchantAgentChatRequest request) {
+        Long requestSessionId = resolveRequestSessionId(request);
+        if (requestSessionId != null) {
+            AgentSession existingSession = agentSessionService.getById(requestSessionId);
+            if (existingSession == null || !shopId.equals(existingSession.getShopId())) {
+                return null;
+            }
+            return existingSession;
+        }
+        AgentSession session = new AgentSession()
+                .setId(nextAgentId())
+                .setShopId(shopId)
+                .setMerchantId(merchantId)
+                .setTitle(buildChatSessionTitle(userMessage))
+                .setScene(scene)
+                .setStatus(2);
+        agentSessionService.save(session);
+        return session;
+    }
+
+    private Long resolveRequestSessionId(MerchantAgentChatRequest request) {
+        if (request == null) {
+            return null;
+        }
+        String sessionId = !isBlank(request.getSessionId()) ? request.getSessionId() : request.getConversationId();
+        if (isBlank(sessionId)) {
+            return null;
+        }
+        try {
+            return Long.valueOf(sessionId);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private List<AgentMessage> loadRecentNaturalMessages(Long sessionId) {
+        if (sessionId == null) {
+            return Collections.emptyList();
+        }
+        List<AgentMessage> messages = agentMessageService.query()
+                .eq("session_id", sessionId)
+                .in("role", "user", "assistant")
+                .orderByAsc("create_time")
+                .list();
+        if (messages.size() <= 6) {
+            return messages;
+        }
+        return messages.subList(messages.size() - 6, messages.size());
+    }
+
     private void recordAction(Long sessionId, Long shopId, Long merchantId, String actionType,
                               String targetType, Long targetId, Map<String, Object> result) {
         AgentActionLog actionLog = new AgentActionLog()
@@ -1383,6 +1479,24 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
                 .setTargetId(targetId)
                 .setResultData(toSimpleJson(result))
                 .setStatus(1);
+        agentActionLogService.save(actionLog);
+    }
+
+    private void recordFailedAction(Long sessionId, Long shopId, Long merchantId, String actionType,
+                                    String targetType, Long targetId, Map<String, Object> request,
+                                    String errorMsg) {
+        AgentActionLog actionLog = new AgentActionLog()
+                .setId(nextAgentId())
+                .setSessionId(sessionId)
+                .setShopId(shopId)
+                .setOperatorId(merchantId)
+                .setOperatorType("agent")
+                .setActionType(actionType)
+                .setTargetType(targetType)
+                .setTargetId(targetId)
+                .setRequestData(toSimpleJson(request))
+                .setStatus(2)
+                .setErrorMsg(errorMsg);
         agentActionLogService.save(actionLog);
     }
 
@@ -1846,6 +1960,9 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         }
         if ("model_call".equals(actionType)) {
             return "模型调用";
+        }
+        if ("tool_calling_chat".equals(actionType)) {
+            return "Tool Calling对话";
         }
         if ("agent_chat".equals(actionType)) {
             return "Agent对话";

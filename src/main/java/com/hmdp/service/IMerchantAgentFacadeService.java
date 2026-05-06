@@ -152,4 +152,13 @@ public interface IMerchantAgentFacadeService {
      * @return Agent 回复、会话ID、建议ID、草稿ID等结构化结果
      */
     Result chatWithAgent(Long shopId, MerchantAgentChatRequest request);
+
+    /**
+     * LangChain4j Tool Calling 学习版对话。
+     *
+     * <p>和普通 chatWithAgent 不同，这个方法不由后端规则直接选择工具，
+     * 而是把只读工具列表交给模型，让模型根据商家问题决定调用哪个工具。</p>
+     */
+    Result toolChatWithAgent(Long shopId, MerchantAgentChatRequest request);
+
 }

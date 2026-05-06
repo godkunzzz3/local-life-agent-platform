@@ -1,0 +1,371 @@
+package com.hmdp.agent;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.hmdp.dto.AgentFlowStepDTO;
+import com.hmdp.dto.MerchantAgentChatRequest;
+import com.hmdp.entity.AgentMessage;
+import com.hmdp.entity.Blog;
+import com.hmdp.entity.BlogComments;
+import com.hmdp.entity.SeckillVoucher;
+import com.hmdp.entity.Shop;
+import com.hmdp.entity.Voucher;
+import com.hmdp.entity.VoucherOrder;
+import com.hmdp.tool.OrderAgentTool;
+import com.hmdp.tool.ReviewAgentTool;
+import com.hmdp.tool.ShopAgentTool;
+import com.hmdp.tool.VoucherAgentTool;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.agent.tool.ToolSpecification;
+import dev.langchain4j.community.model.dashscope.QwenChatModel;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.data.message.ToolExecutionResultMessage;
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.request.ChatRequest;
+import dev.langchain4j.model.chat.request.ToolChoice;
+import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+
+import javax.annotation.Resource;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+/**
+ * LangChain4j Tool Calling 学习版编排服务。
+ *
+ * <p>这个类专门用于学习“模型选择工具”的流程，不替换现有 /chat 主链路。
+ * 第一版只开放只读工具：店铺信息、订单统计、优惠券列表、评价摘要。
+ * 写操作仍然走草稿 + 商家确认，不能直接暴露给模型调用。</p>
+ */
+@Component
+public class MerchantAgentToolCallingService {
+
+    private static final String TOOL_GET_SHOP_PROFILE = "getShopProfile";
+    private static final String TOOL_GET_ORDER_STATS = "getShopOrderStats";
+    private static final String TOOL_GET_VOUCHERS = "getShopVouchers";
+    private static final String TOOL_GET_REVIEW_SUMMARY = "getShopReviewSummary";
+
+    @Value("${merchant-agent.model.api-key:}")
+    private String apiKey;
+
+    @Value("${merchant-agent.model.base-url:}")
+    private String baseUrl;
+
+    @Value("${merchant-agent.model.model-name:qwen-turbo}")
+    private String modelName;
+
+    @Value("${merchant-agent.model.temperature:0.3}")
+    private Float temperature;
+
+    @Value("${merchant-agent.model.max-tokens:800}")
+    private Integer maxTokens;
+
+    @Resource
+    private ObjectMapper objectMapper;
+    @Resource
+    private ShopAgentTool shopAgentTool;
+    @Resource
+    private OrderAgentTool orderAgentTool;
+    @Resource
+    private VoucherAgentTool voucherAgentTool;
+    @Resource
+    private ReviewAgentTool reviewAgentTool;
+    @Resource
+    private MerchantAgentPromptTemplateService promptTemplateService;
+
+    /**
+     * 执行一次 Tool Calling 对话。
+     *
+     * <p>流程分两轮：
+     * 第一轮把工具说明书交给模型，让模型选择要调用的工具；
+     * Java 后端执行工具后，第二轮把工具结果交回模型生成最终回复。</p>
+     */
+    public Map<String, Object> chat(Shop shop, MerchantAgentChatRequest request) {
+        return chat(shop, request, new ArrayList<>());
+    }
+
+    /**
+     * 带历史消息的 Tool Calling 对话。
+     *
+     * <p>历史消息只取最近几条 user/assistant 自然语言内容，不把 tool 结果全文塞给模型。
+     * 这样可以让模型理解“继续、刚才、它”这类上下文，同时避免工具 JSON 过长导致 prompt 膨胀。</p>
+     */
+    public Map<String, Object> chat(Shop shop, MerchantAgentChatRequest request, List<AgentMessage> historyMessages) {
+        if (isBlank(apiKey)) {
+            throw new IllegalStateException("未配置 DASHSCOPE_API_KEY，Tool Calling 学习接口需要真实模型支持。");
+        }
+
+        long start = System.currentTimeMillis();
+        String userMessage = request.getMessage().trim();
+        List<AgentFlowStepDTO> flowTrace = new ArrayList<>();
+        List<Map<String, Object>> toolCalls = new ArrayList<>();
+        List<ChatMessage> messages = new ArrayList<>();
+
+        messages.add(SystemMessage.from(buildSystemPrompt(shop)));
+        appendHistoryMessages(messages, historyMessages);
+        messages.add(UserMessage.from(userMessage));
+        flowTrace.add(flow("receive_message", "接收商家问题", "success",
+                "收到商家输入：" + userMessage, null, null));
+
+        ChatModel chatModel = buildChatModel();
+        ChatRequest firstRequest = ChatRequest.builder()
+                .messages(messages)
+                .toolSpecifications(toolSpecifications())
+                .toolChoice(ToolChoice.AUTO)
+                .build();
+        ChatResponse firstResponse = chatModel.chat(firstRequest);
+        AiMessage aiMessage = firstResponse.aiMessage();
+
+        if (aiMessage == null || !aiMessage.hasToolExecutionRequests()) {
+            String answer = aiMessage == null ? "模型未返回有效回复。" : aiMessage.text();
+            flowTrace.add(flow("select_tool", "模型选择工具", "skipped",
+                    "模型没有请求工具调用，直接生成回复", null, null));
+            return buildResult(answer, toolCalls, flowTrace, start);
+        }
+
+        messages.add(aiMessage);
+        flowTrace.add(flow("select_tool", "模型选择工具", "success",
+                "模型请求调用 " + aiMessage.toolExecutionRequests().size() + " 个工具", null, null));
+
+        for (ToolExecutionRequest toolRequest : aiMessage.toolExecutionRequests()) {
+            long toolStart = System.currentTimeMillis();
+            Object toolResult = executeReadonlyTool(shop, toolRequest);
+            long costMillis = System.currentTimeMillis() - toolStart;
+            String toolResultJson = toJson(toolResult);
+
+            Map<String, Object> callRow = new LinkedHashMap<>();
+            callRow.put("toolName", toolRequest.name());
+            callRow.put("arguments", parseJsonMap(toolRequest.arguments()));
+            callRow.put("result", toolResult);
+            callRow.put("costMillis", costMillis);
+            toolCalls.add(callRow);
+
+            messages.add(ToolExecutionResultMessage.from(toolRequest, toolResultJson));
+            flowTrace.add(flow("execute_tool", "执行只读工具", "success",
+                    "已执行工具：" + toolRequest.name(), toolRequest.name(), costMillis));
+        }
+
+        ChatRequest finalRequest = ChatRequest.builder()
+                .messages(messages)
+                .build();
+        ChatResponse finalResponse = chatModel.chat(finalRequest);
+        String answer = finalResponse.aiMessage() == null ? "模型未返回最终回复。" : finalResponse.aiMessage().text();
+        flowTrace.add(flow("generate_reply", "生成最终回复", "success",
+                "模型已基于工具结果生成最终回复", null, null));
+        return buildResult(answer, toolCalls, flowTrace, start);
+    }
+
+    private void appendHistoryMessages(List<ChatMessage> messages, List<AgentMessage> historyMessages) {
+        if (historyMessages == null || historyMessages.isEmpty()) {
+            return;
+        }
+        int fromIndex = Math.max(0, historyMessages.size() - 6);
+        for (AgentMessage history : historyMessages.subList(fromIndex, historyMessages.size())) {
+            if (history == null || isBlank(history.getContent())) {
+                continue;
+            }
+            if ("user".equals(history.getRole())) {
+                messages.add(UserMessage.from(history.getContent()));
+            } else if ("assistant".equals(history.getRole())) {
+                messages.add(AiMessage.from(history.getContent()));
+            }
+        }
+    }
+
+    private ChatModel buildChatModel() {
+        QwenChatModel.QwenChatModelBuilder builder = QwenChatModel.builder()
+                .apiKey(apiKey)
+                .modelName(modelName)
+                .temperature(temperature)
+                .maxTokens(maxTokens);
+        if (!isBlank(baseUrl)) {
+            builder.baseUrl(baseUrl);
+        }
+        return builder.build();
+    }
+
+    private String buildSystemPrompt(Shop shop) {
+        return promptTemplateService.systemPrompt() + "\n\n"
+                + promptTemplateService.behaviorBoundary() + "\n\n"
+                + "【Tool Calling 学习模式】\n"
+                + "- 当前店铺 ID 固定为：" + shop.getId() + "，店铺名称：" + shop.getName() + "。\n"
+                + "- 你只能调用提供的只读工具，不允许要求创建、删除、修改任何业务数据。\n"
+                + "- 如果问题需要经营数据，先调用最相关的工具，再基于工具结果回答。\n"
+                + "- 如果数据不足，要明确说明数据不足，不要编造。";
+    }
+
+    private List<ToolSpecification> toolSpecifications() {
+        return Arrays.asList(
+                ToolSpecification.builder()
+                        .name(TOOL_GET_SHOP_PROFILE)
+                        .description("查询当前店铺基础信息，适合回答店铺名称、地址、评分、人均、营业时间等问题。")
+                        .parameters(baseShopIdSchema())
+                        .build(),
+                ToolSpecification.builder()
+                        .name(TOOL_GET_ORDER_STATS)
+                        .description("查询当前店铺订单统计，适合分析订单量、支付量、核销、退款、预计收入和转化率。")
+                        .parameters(JsonObjectSchema.builder()
+                                .addIntegerProperty("shopId", "店铺ID，必须使用当前店铺ID")
+                                .addEnumProperty("dateRange", Arrays.asList("TODAY", "LAST_7_DAYS", "LAST_30_DAYS"),
+                                        "统计范围，默认 LAST_7_DAYS")
+                                .required("shopId")
+                                .additionalProperties(false)
+                                .build())
+                        .build(),
+                ToolSpecification.builder()
+                        .name(TOOL_GET_VOUCHERS)
+                        .description("查询当前店铺优惠券和秒杀券结构，适合判断券力度、库存、是否需要新增活动。")
+                        .parameters(baseShopIdSchema())
+                        .build(),
+                ToolSpecification.builder()
+                        .name(TOOL_GET_REVIEW_SUMMARY)
+                        .description("查询当前店铺评价和探店内容摘要，适合分析口碑、内容互动和用户信任问题。")
+                        .parameters(baseShopIdSchema())
+                        .build()
+        );
+    }
+
+    private JsonObjectSchema baseShopIdSchema() {
+        return JsonObjectSchema.builder()
+                .addIntegerProperty("shopId", "店铺ID，必须使用当前店铺ID")
+                .required("shopId")
+                .additionalProperties(false)
+                .build();
+    }
+
+    private Object executeReadonlyTool(Shop shop, ToolExecutionRequest toolRequest) {
+        Map<String, Object> args = parseJsonMap(toolRequest.arguments());
+        Long requestedShopId = toLong(args.get("shopId"));
+        if (requestedShopId != null && !shop.getId().equals(requestedShopId)) {
+            throw new IllegalArgumentException("工具只能查询当前店铺数据，不能跨店铺调用");
+        }
+
+        String toolName = toolRequest.name();
+        if (TOOL_GET_SHOP_PROFILE.equals(toolName)) {
+            return shopAgentTool.buildShopProfile(shop);
+        }
+        if (TOOL_GET_ORDER_STATS.equals(toolName)) {
+            DateRange range = resolveDateRange(String.valueOf(args.getOrDefault("dateRange", "LAST_7_DAYS")));
+            List<Voucher> vouchers = voucherAgentTool.queryShopVouchers(shop.getId());
+            List<Long> voucherIds = vouchers.stream().map(Voucher::getId).collect(Collectors.toList());
+            Map<Long, Voucher> voucherMap = vouchers.stream().collect(Collectors.toMap(Voucher::getId, voucher -> voucher));
+            List<VoucherOrder> orders = orderAgentTool.queryOrders(voucherIds, range.startTime);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("dateRange", range.code);
+            result.put("orderAnalysis", orderAgentTool.buildOrderAnalysis(orders, voucherMap));
+            return result;
+        }
+        if (TOOL_GET_VOUCHERS.equals(toolName)) {
+            List<Voucher> vouchers = voucherAgentTool.queryShopVouchers(shop.getId());
+            List<Long> voucherIds = vouchers.stream().map(Voucher::getId).collect(Collectors.toList());
+            List<SeckillVoucher> seckillVouchers = voucherAgentTool.querySeckillVouchers(voucherIds);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("voucherAnalysis", voucherAgentTool.buildVoucherAnalysis(vouchers, seckillVouchers));
+            result.put("vouchers", vouchers);
+            return result;
+        }
+        if (TOOL_GET_REVIEW_SUMMARY.equals(toolName)) {
+            List<Blog> blogs = reviewAgentTool.queryShopBlogs(shop.getId());
+            List<BlogComments> comments = reviewAgentTool.queryComments(blogs);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("reviewAnalysis", reviewAgentTool.buildReviewAnalysis(blogs, comments));
+            return result;
+        }
+        throw new IllegalArgumentException("不支持的工具：" + toolName);
+    }
+
+    private Map<String, Object> buildResult(String answer, List<Map<String, Object>> toolCalls,
+                                            List<AgentFlowStepDTO> flowTrace, long start) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("answer", answer);
+        result.put("reply", answer);
+        result.put("provider", "langchain4j");
+        result.put("modelName", modelName);
+        result.put("promptVersion", promptTemplateService.promptVersion());
+        result.put("toolCalling", true);
+        result.put("toolCalls", toolCalls);
+        result.put("calledTools", toolCalls.stream().map(item -> item.get("toolName")).collect(Collectors.toList()));
+        result.put("flowTrace", flowTrace);
+        result.put("costMillis", System.currentTimeMillis() - start);
+        return result;
+    }
+
+    private DateRange resolveDateRange(String value) {
+        String code = isBlank(value) ? "LAST_7_DAYS" : value;
+        LocalDateTime now = LocalDateTime.now();
+        if ("TODAY".equals(code)) {
+            return new DateRange("TODAY", now.toLocalDate().atStartOfDay());
+        }
+        if ("LAST_30_DAYS".equals(code)) {
+            return new DateRange("LAST_30_DAYS", now.minusDays(30));
+        }
+        return new DateRange("LAST_7_DAYS", now.minusDays(7));
+    }
+
+    private AgentFlowStepDTO flow(String stepCode, String stepName, String status,
+                                  String detail, String toolName, Long costMillis) {
+        return new AgentFlowStepDTO()
+                .setStepCode(stepCode)
+                .setStepName(stepName)
+                .setStatus(status)
+                .setDetail(detail)
+                .setToolName(toolName)
+                .setCostMillis(costMillis);
+    }
+
+    private Map<String, Object> parseJsonMap(String json) {
+        if (isBlank(json)) {
+            return new LinkedHashMap<>();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {
+            });
+        } catch (Exception e) {
+            return new LinkedHashMap<>();
+        }
+    }
+
+    private String toJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (JsonProcessingException e) {
+            return String.valueOf(value);
+        }
+    }
+
+    private Long toLong(Object value) {
+        if (value == null) {
+            return null;
+        }
+        try {
+            return Long.valueOf(String.valueOf(value));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty() || "null".equals(value);
+    }
+
+    private static class DateRange {
+        private final String code;
+        private final LocalDateTime startTime;
+
+        private DateRange(String code, LocalDateTime startTime) {
+            this.code = code;
+            this.startTime = startTime;
+        }
+    }
+}
