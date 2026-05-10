@@ -200,6 +200,11 @@ public class VoucherAgentTool implements AgentToolDescriptor {
         row.put("reason", draft.getReason());
         row.put("status", draft.getStatus());
         row.put("statusName", resolveDraftStatusName(draft.getStatus()));
+        // Human-in-the-loop 状态字段：前端和审计页可以直接判断草稿是否还需要商家确认。
+        // Agent 只负责生成待确认草稿；只有商家确认后，needConfirm 才会变成 false。
+        row.put("needConfirm", draft.getStatus() != null && draft.getStatus() == 1);
+        row.put("confirmed", draft.getStatus() != null && draft.getStatus() == 2);
+        row.put("humanInLoopStage", resolveHumanInLoopStage(draft.getStatus()));
         row.put("createTime", draft.getCreateTime());
         row.put("updateTime", draft.getUpdateTime());
         return row;
@@ -350,6 +355,24 @@ public class VoucherAgentTool implements AgentToolDescriptor {
                 return "已过期";
             default:
                 return "未知状态";
+        }
+    }
+
+    private String resolveHumanInLoopStage(Integer status) {
+        if (status == null) {
+            return "UNKNOWN";
+        }
+        switch (status) {
+            case 1:
+                return "WAIT_MERCHANT_CONFIRM";
+            case 2:
+                return "MERCHANT_CONFIRMED_AND_EXECUTED";
+            case 3:
+                return "MERCHANT_REJECTED";
+            case 4:
+                return "EXPIRED";
+            default:
+                return "UNKNOWN";
         }
     }
 }

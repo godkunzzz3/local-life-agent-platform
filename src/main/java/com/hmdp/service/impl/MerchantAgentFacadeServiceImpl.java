@@ -320,9 +320,13 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         agentSuggestionService.updateById(new AgentSuggestion()
                 .setId(suggestion.getId())
                 .setStatus(2));
+        Map<String, Object> result = voucherAgentTool.draftToMap(draft);
+        result.put("needConfirm", true);
+        result.put("confirmed", false);
+        result.put("humanInLoopMessage", "Agent 已保存活动草稿，等待商家确认后才会创建真实优惠券");
         recordAction(suggestion.getSessionId(), suggestion.getShopId(), currentMerchantId(),
-                "create_campaign_draft", "draft", draft.getId(), voucherAgentTool.draftToMap(draft));
-        return Result.ok(voucherAgentTool.draftToMap(draft));
+                "create_campaign_draft", "draft", draft.getId(), result);
+        return Result.ok(result);
     }
 
     @Override
@@ -394,6 +398,9 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         draft.setStatus(3);
 
         Map<String, Object> result = voucherAgentTool.draftToMap(draft);
+        result.put("needConfirm", true);
+        result.put("confirmed", false);
+        result.put("humanInLoopMessage", "Agent 已生成活动草稿，必须由商家确认后才会创建真实优惠券");
         result.put("message", "草稿已拒绝");
         AgentSuggestion suggestion = agentSuggestionService.getById(draft.getSuggestionId());
         Long sessionId = suggestion == null ? null : suggestion.getSessionId();
@@ -430,6 +437,9 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         campaignDraftService.updateById(updateDraft);
         AgentCampaignDraft freshDraft = campaignDraftService.getById(draftId);
         Map<String, Object> result = voucherAgentTool.draftToMap(freshDraft);
+        result.put("needConfirm", true);
+        result.put("confirmed", false);
+        result.put("humanInLoopMessage", "草稿已更新，仍需商家确认后才会创建真实优惠券");
         result.put("message", "草稿已更新");
         AgentSuggestion suggestion = agentSuggestionService.getById(freshDraft.getSuggestionId());
         Long sessionId = suggestion == null ? null : suggestion.getSessionId();
@@ -688,6 +698,9 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         Map<String, Object> result = voucherAgentTool.draftToMap(draft);
         result.put("voucherId", voucher.getId());
         result.put("voucherIdText", String.valueOf(voucher.getId()));
+        result.put("needConfirm", false);
+        result.put("confirmed", true);
+        result.put("humanInLoopMessage", "商家已确认，后端已把草稿转换为真实优惠券");
         if ("seckill".equals(draft.getDraftType())) {
             result.put("redisStockKey", SECKILL_STOCK_KEY + voucher.getId());
             result.put("redisBeginKey", SECKILL_BEGIN_KEY + voucher.getId());
