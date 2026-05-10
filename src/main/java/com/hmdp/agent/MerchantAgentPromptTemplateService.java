@@ -4,8 +4,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StreamUtils;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -85,8 +87,9 @@ public class MerchantAgentPromptTemplateService {
 
     private String readTemplate(String fileName) {
         ClassPathResource resource = new ClassPathResource(PROMPT_DIR + fileName);
-        try {
-            byte[] bytes = resource.getInputStream().readAllBytes();
+        try (InputStream inputStream = resource.getInputStream()) {
+            // Java 8 没有 InputStream#readAllBytes，这里使用 Spring 的 StreamUtils 读取 classpath 模板。
+            byte[] bytes = StreamUtils.copyToByteArray(inputStream);
             return new String(bytes, StandardCharsets.UTF_8).trim();
         } catch (IOException e) {
             log.warn("读取 Agent Prompt 模板失败：{}", fileName, e);
