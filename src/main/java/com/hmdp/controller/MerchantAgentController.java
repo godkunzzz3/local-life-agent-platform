@@ -1,10 +1,12 @@
 package com.hmdp.controller;
 
+import com.hmdp.dto.AgentKnowledgeDocRequest;
 import com.hmdp.dto.MerchantOperationReportRequest;
 import com.hmdp.dto.MerchantCampaignDraftRequest;
 import com.hmdp.dto.MerchantAgentChatRequest;
 import com.hmdp.dto.Result;
 import com.hmdp.service.IMerchantAgentFacadeService;
+import com.hmdp.service.IMerchantAgentKnowledgeDocService;
 import org.springframework.web.bind.annotation.*;
 
 import javax.annotation.Resource;
@@ -21,6 +23,8 @@ public class MerchantAgentController {
 
     @Resource
     private IMerchantAgentFacadeService merchantAgentFacadeService;
+    @Resource
+    private IMerchantAgentKnowledgeDocService merchantAgentKnowledgeDocService;
 
     /**
      * 查询 Agent 工具清单。
@@ -31,6 +35,59 @@ public class MerchantAgentController {
     @GetMapping("/tools")
     public Result queryAgentTools() {
         return merchantAgentFacadeService.queryAgentTools();
+    }
+
+    /**
+     * 新增 Agent 知识库文档。
+     *
+     * <p>这是 RAG 的地基接口：先把运营规则、行业案例、风控规则沉淀到 MySQL。
+     * 后续向量化时，会从这些启用文档中生成 embedding。</p>
+     */
+    @PostMapping("/knowledge-docs")
+    public Result createKnowledgeDoc(@RequestBody AgentKnowledgeDocRequest request) {
+        return merchantAgentKnowledgeDocService.createKnowledgeDoc(request);
+    }
+
+    /**
+     * 查询知识文档列表，给商家运营后台或调试页面使用。
+     */
+    @GetMapping("/knowledge-docs")
+    public Result queryKnowledgeDocs(@RequestParam(value = "category", required = false) String category,
+                                     @RequestParam(value = "keyword", required = false) String keyword,
+                                     @RequestParam(value = "status", required = false) Integer status) {
+        return merchantAgentKnowledgeDocService.queryKnowledgeDocs(category, keyword, status);
+    }
+
+    /**
+     * 修改知识文档。
+     */
+    @PutMapping("/knowledge-docs/{docId}")
+    public Result updateKnowledgeDoc(@PathVariable("docId") Long docId,
+                                     @RequestBody AgentKnowledgeDocRequest request) {
+        return merchantAgentKnowledgeDocService.updateKnowledgeDoc(docId, request);
+    }
+
+    /**
+     * 停用知识文档。
+     *
+     * <p>学习阶段先做软停用，不直接删除知识，避免误删后无法复盘 Agent 为什么少了某条规则。</p>
+     */
+    @PostMapping("/knowledge-docs/{docId}/disable")
+    public Result disableKnowledgeDoc(@PathVariable("docId") Long docId) {
+        return merchantAgentKnowledgeDocService.disableKnowledgeDoc(docId);
+    }
+
+    /**
+     * RAG 第一版检索接口。
+     *
+     * <p>当前使用 MySQL 关键词检索；下一步接向量库时，接口语义可以保持不变，
+     * 只替换底层检索实现。</p>
+     */
+    @GetMapping("/knowledge-docs/search")
+    public Result searchKnowledgeDocs(@RequestParam(value = "category", required = false) String category,
+                                      @RequestParam(value = "keyword", required = false) String keyword,
+                                      @RequestParam(value = "limit", required = false) Integer limit) {
+        return merchantAgentKnowledgeDocService.searchKnowledgeDocs(category, keyword, limit);
     }
 
     /**

@@ -118,4 +118,21 @@ CREATE TABLE IF NOT EXISTS `tb_agent_action_log` (
   INDEX `idx_action_status`(`action_type`, `status`) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '商家运营Agent操作审计表' ROW_FORMAT = Dynamic;
 
+-- ----------------------------
+-- Table structure for tb_agent_knowledge_doc
+-- ----------------------------
+CREATE TABLE IF NOT EXISTS `tb_agent_knowledge_doc` (
+  `id` bigint(20) UNSIGNED NOT NULL COMMENT '主键，建议使用 RedisIdWorker 生成',
+  `title` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '标题',
+  `category` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '分类：voucher_rule / seckill_rule / industry_case / risk_rule / cost_rule',
+  `content` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '知识正文',
+  `vector_id` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '向量库文档ID，第一版可为空',
+  `status` tinyint(1) UNSIGNED NOT NULL DEFAULT 1 COMMENT '状态：1启用，0停用',
+  `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_category_status_time`(`category`, `status`, `update_time`) USING BTREE,
+  INDEX `idx_status_time`(`status`, `update_time`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '商家运营Agent知识库文档表' ROW_FORMAT = Dynamic;
+
 SET FOREIGN_KEY_CHECKS = 1;
