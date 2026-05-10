@@ -12,6 +12,7 @@ import com.hmdp.entity.SeckillVoucher;
 import com.hmdp.entity.Shop;
 import com.hmdp.entity.Voucher;
 import com.hmdp.entity.VoucherOrder;
+import com.hmdp.service.IMerchantAgentKnowledgeDocService;
 import com.hmdp.tool.OrderAgentTool;
 import com.hmdp.tool.ReviewAgentTool;
 import com.hmdp.tool.ShopAgentTool;
@@ -83,6 +84,8 @@ public class MerchantAgentToolCallingService {
     private ReviewAgentTool reviewAgentTool;
     @Resource
     private MerchantAgentPromptTemplateService promptTemplateService;
+    @Resource
+    private IMerchantAgentKnowledgeDocService agentKnowledgeDocService;
 
     /**
      * 执行一次 Tool Calling 对话。
@@ -111,12 +114,19 @@ public class MerchantAgentToolCallingService {
         List<AgentFlowStepDTO> flowTrace = new ArrayList<>();
         List<Map<String, Object>> toolCalls = new ArrayList<>();
         List<ChatMessage> messages = new ArrayList<>();
+        List<Map<String, Object>> ragKnowledge = retrieveToolCallingRagKnowledge(userMessage);
+        Map<String, Object> promptContext = buildPromptContext(shop, userMessage, ragKnowledge);
 
-        messages.add(SystemMessage.from(buildSystemPrompt(shop)));
+        messages.add(SystemMessage.from(buildSystemPrompt(shop, ragKnowledge)));
         appendHistoryMessages(messages, historyMessages);
         messages.add(UserMessage.from(userMessage));
         flowTrace.add(flow("receive_message", "接收商家问题", "success",
                 "收到商家输入：" + userMessage, null, null));
+        flowTrace.add(flow("retrieve_knowledge", "检索运营知识", "success",
+                ragKnowledge.isEmpty()
+                        ? "Tool Calling 本轮未召回知识文档，将只基于工具数据回答"
+                        : "Tool Calling 已召回 " + ragKnowledge.size() + " 条运营知识",
+                "knowledge_retrieval", null));
 
         ChatModel chatModel = buildChatModel();
         ChatRequest firstRequest = ChatRequest.builder()
@@ -131,7 +141,7 @@ public class MerchantAgentToolCallingService {
             String answer = aiMessage == null ? "模型未返回有效回复。" : aiMessage.text();
             flowTrace.add(flow("select_tool", "模型选择工具", "skipped",
                     "模型没有请求工具调用，直接生成回复", null, null));
-            return buildResult(answer, toolCalls, flowTrace, start);
+            return buildResult(answer, toolCalls, flowTrace, promptContext, start);
         }
 
         messages.add(aiMessage);
@@ -163,7 +173,7 @@ public class MerchantAgentToolCallingService {
         String answer = finalResponse.aiMessage() == null ? "模型未返回最终回复。" : finalResponse.aiMessage().text();
         flowTrace.add(flow("generate_reply", "生成最终回复", "success",
                 "模型已基于工具结果生成最终回复", null, null));
-        return buildResult(answer, toolCalls, flowTrace, start);
+        return buildResult(answer, toolCalls, flowTrace, promptContext, start);
     }
 
     private void appendHistoryMessages(List<ChatMessage> messages, List<AgentMessage> historyMessages) {
@@ -195,14 +205,16 @@ public class MerchantAgentToolCallingService {
         return builder.build();
     }
 
-    private String buildSystemPrompt(Shop shop) {
+    private String buildSystemPrompt(Shop shop, List<Map<String, Object>> ragKnowledge) {
         return promptTemplateService.systemPrompt() + "\n\n"
                 + promptTemplateService.behaviorBoundary() + "\n\n"
                 + "【Tool Calling 学习模式】\n"
                 + "- 当前店铺 ID 固定为：" + shop.getId() + "，店铺名称：" + shop.getName() + "。\n"
                 + "- 你只能调用提供的只读工具，不允许要求创建、删除、修改任何业务数据。\n"
                 + "- 如果问题需要经营数据，先调用最相关的工具，再基于工具结果回答。\n"
-                + "- 如果数据不足，要明确说明数据不足，不要编造。";
+                + "- 如果检索到运营知识，选择工具和生成回复时都要结合这些规则，但不能编造规则中没有的数据。\n"
+                + "- 如果数据不足，要明确说明数据不足，不要编造。\n\n"
+                + buildRagPromptSection(ragKnowledge);
     }
 
     private List<ToolSpecification> toolSpecifications() {
@@ -286,7 +298,9 @@ public class MerchantAgentToolCallingService {
     }
 
     private Map<String, Object> buildResult(String answer, List<Map<String, Object>> toolCalls,
-                                            List<AgentFlowStepDTO> flowTrace, long start) {
+                                            List<AgentFlowStepDTO> flowTrace,
+                                            Map<String, Object> promptContext,
+                                            long start) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("answer", answer);
         result.put("reply", answer);
@@ -296,9 +310,67 @@ public class MerchantAgentToolCallingService {
         result.put("toolCalling", true);
         result.put("toolCalls", toolCalls);
         result.put("calledTools", toolCalls.stream().map(item -> item.get("toolName")).collect(Collectors.toList()));
+        result.put("promptContext", promptContext);
         result.put("flowTrace", flowTrace);
         result.put("costMillis", System.currentTimeMillis() - start);
         return result;
+    }
+
+    private Map<String, Object> buildPromptContext(Shop shop, String userMessage, List<Map<String, Object>> ragKnowledge) {
+        Map<String, Object> context = new LinkedHashMap<>();
+        context.put("scene", "merchant_tool_calling_chat");
+        context.put("shopId", shop.getId());
+        context.put("shopName", shop.getName());
+        context.put("userMessage", userMessage);
+        context.put("promptVersion", promptTemplateService.promptVersion());
+        context.put("ragRetrievalMode", "mysql_keyword");
+        context.put("ragKnowledge", ragKnowledge);
+        context.put("constraints", Arrays.asList(
+                "Tool Calling 模式由模型决定调用哪个只读工具",
+                "RAG 知识只提供运营规则背景，实时经营数据必须来自工具调用",
+                "涉及创建真实活动时只能提示生成草稿和商家确认，不能直接执行"
+        ));
+        return context;
+    }
+
+    private List<Map<String, Object>> retrieveToolCallingRagKnowledge(String userMessage) {
+        try {
+            return agentKnowledgeDocService.retrieveForAgent(resolveToolCallingIntent(userMessage), userMessage, 3);
+        } catch (Exception e) {
+            // RAG 是增强链路，检索失败时不能阻断 Tool Calling 主流程。
+            // 生产环境可在这里补充告警日志，学习阶段先降级为空知识。
+            return new ArrayList<>();
+        }
+    }
+
+    private String resolveToolCallingIntent(String userMessage) {
+        if (containsAny(userMessage, "秒杀", "优惠券", "代金券", "活动", "草稿")) {
+            return "voucher_plan";
+        }
+        if (containsAny(userMessage, "评价", "评论", "口碑", "探店")) {
+            return "review_analysis";
+        }
+        if (containsAny(userMessage, "订单", "收入", "营收", "成本", "利润", "转化")) {
+            return "order_analysis";
+        }
+        return "operation_chat";
+    }
+
+    private String buildRagPromptSection(List<Map<String, Object>> ragKnowledge) {
+        if (ragKnowledge == null || ragKnowledge.isEmpty()) {
+            return "【检索到的运营知识】\n本轮未召回知识库内容，请只基于工具返回的数据回答。";
+        }
+        StringBuilder builder = new StringBuilder("【检索到的运营知识】\n");
+        int index = 1;
+        for (Map<String, Object> doc : ragKnowledge) {
+            builder.append(index++)
+                    .append(". ")
+                    .append(String.valueOf(doc.getOrDefault("title", "未命名知识")))
+                    .append("：")
+                    .append(String.valueOf(doc.getOrDefault("content", "")))
+                    .append("\n");
+        }
+        return builder.toString();
     }
 
     private DateRange resolveDateRange(String value) {
@@ -357,6 +429,18 @@ public class MerchantAgentToolCallingService {
 
     private boolean isBlank(String value) {
         return value == null || value.trim().isEmpty() || "null".equals(value);
+    }
+
+    private boolean containsAny(String text, String... keywords) {
+        if (text == null) {
+            return false;
+        }
+        for (String keyword : keywords) {
+            if (text.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static class DateRange {
