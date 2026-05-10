@@ -5,6 +5,9 @@ import com.hmdp.dto.AgentKnowledgeDocRequest;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.AgentKnowledgeDoc;
 
+import java.util.List;
+import java.util.Map;
+
 /**
  * 商家运营 Agent 知识库文档服务。
  *
@@ -37,4 +40,12 @@ public interface IMerchantAgentKnowledgeDocService extends IService<AgentKnowled
      * RAG 第一版检索入口：用分类 + 关键词召回知识文档。
      */
     Result searchKnowledgeDocs(String category, String keyword, Integer limit);
+
+    /**
+     * Agent 内部 RAG 检索入口。
+     *
+     * <p>返回 Map 是为了方便直接放进 PromptContext 和前端调试面板。后续接向量库时，
+     * 这个方法可以改成融合关键词、向量相似度和重排序分数。</p>
+     */
+    List<Map<String, Object>> retrieveForAgent(String intent, String userMessage, Integer limit);
 }

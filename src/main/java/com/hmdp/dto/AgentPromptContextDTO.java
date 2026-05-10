@@ -4,6 +4,7 @@ import lombok.Data;
 import lombok.experimental.Accessors;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Agent Prompt 上下文。
@@ -69,4 +70,17 @@ public class AgentPromptContextDTO {
      * 期望输出格式，方便后续要求大模型稳定返回结构化内容。
      */
     private String outputFormat;
+
+    /**
+     * RAG 检索召回的运营知识。
+     *
+     * <p>这里保存的是已经从知识库检索出来的少量相关规则或案例。模型回复时必须优先基于
+     * 这些知识和工具数据，不允许凭空编造平台规则。</p>
+     */
+    private List<Map<String, Object>> ragKnowledge;
+
+    /**
+     * RAG 检索方式。当前第一版是 mysql_keyword，后续可以升级为 vector_search。
+     */
+    private String ragRetrievalMode;
 }

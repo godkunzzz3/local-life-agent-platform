@@ -11,6 +11,9 @@
 【工具结果】
 {{toolResult}}
 
+【检索到的运营知识】
+{{ragKnowledge}}
+
 【推荐动作】
 {{recommendation}}
 

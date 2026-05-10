@@ -22,6 +22,7 @@ import com.hmdp.service.IMerchantAgentActionLogService;
 import com.hmdp.service.IMerchantAgentMessageService;
 import com.hmdp.service.IMerchantAgentSessionService;
 import com.hmdp.service.IMerchantAgentSuggestionService;
+import com.hmdp.service.IMerchantAgentKnowledgeDocService;
 import com.hmdp.service.IMerchantCampaignDraftService;
 import com.hmdp.service.IMerchantService;
 import com.hmdp.tool.OrderAgentTool;
@@ -78,6 +79,8 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     private IMerchantAgentMessageService agentMessageService;
     @Resource
     private IMerchantAgentSuggestionService agentSuggestionService;
+    @Resource
+    private IMerchantAgentKnowledgeDocService agentKnowledgeDocService;
     @Resource
     private IMerchantCampaignDraftService campaignDraftService;
     @Resource
@@ -735,10 +738,16 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         String intent = resolveChatIntent(userMessage);
         DateRange range = resolveDateRange(resolveChatDateRange(userMessage, request.getDateRange()));
         String toolName = resolveChatToolName(intent);
-        AgentPromptContextDTO promptContext = buildPromptContext(shop, userMessage, intent, toolName, range);
+        List<Map<String, Object>> ragKnowledge = retrieveRagKnowledge(intent, userMessage);
+        AgentPromptContextDTO promptContext = buildPromptContext(shop, userMessage, intent, toolName, range, ragKnowledge);
         List<AgentFlowStepDTO> flowTrace = new ArrayList<>();
         flowTrace.add(buildFlowStep("receive_message", "接收商家问题", "success",
                 "收到商家输入：" + userMessage, null, null));
+        flowTrace.add(buildFlowStep("retrieve_knowledge", "检索运营知识", "success",
+                ragKnowledge.isEmpty()
+                        ? "未召回知识文档，本轮只基于业务数据回答"
+                        : "已召回 " + ragKnowledge.size() + " 条运营知识",
+                "knowledge_retrieval", null));
         flowTrace.add(buildFlowStep("understand_intent", "识别业务意图", "success",
                 "识别为：" + resolveChatIntentName(intent), null, null));
         flowTrace.add(buildFlowStep("select_tool", "选择 Agent 工具", "success",
@@ -865,11 +874,13 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     }
 
     private AgentPromptContextDTO buildPromptContext(Shop shop, String userMessage, String intent,
-                                                     String toolName, DateRange range) {
+                                                     String toolName, DateRange range,
+                                                     List<Map<String, Object>> ragKnowledge) {
         List<String> constraints = new ArrayList<>();
         constraints.add("先判断商家问题类型，再决定是否需要经营数据分析");
         constraints.add("身份、模型、能力说明类问题不要展开订单或店铺经营报告");
         constraints.add("只能基于当前店铺数据、订单数据、优惠券数据和评价数据给出建议");
+        constraints.add("如果检索到运营知识，必须优先结合知识库规则说明建议依据");
         constraints.add("涉及创建真实优惠券或秒杀券时，必须先生成草稿，由商家确认后才能写入业务表");
         constraints.add("回复要说明关键指标和下一步动作，避免只给空泛建议");
         constraints.add("如果数据不足，要明确提示数据不足，而不是编造结论");
@@ -885,7 +896,9 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
                 .setShopId(shop.getId())
                 .setShopName(shop.getName())
                 .setConstraints(constraints)
-                .setOutputFormat(promptTemplateService.outputRequirement(intent));
+                .setOutputFormat(promptTemplateService.outputRequirement(intent))
+                .setRagKnowledge(ragKnowledge)
+                .setRagRetrievalMode("mysql_keyword");
     }
 
     private AgentFlowStepDTO buildFlowStep(String stepCode, String stepName, String status,
@@ -897,6 +910,16 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
                 .setDetail(detail)
                 .setToolName(toolName)
                 .setCostMillis(costMillis);
+    }
+
+    private List<Map<String, Object>> retrieveRagKnowledge(String intent, String userMessage) {
+        try {
+            return agentKnowledgeDocService.retrieveForAgent(intent, userMessage, 3);
+        } catch (Exception e) {
+            // RAG 是增强能力，不能因为知识库检索失败导致主对话不可用。
+            // 企业项目里这类增强链路通常要降级为空知识，并在日志中排查。
+            return Collections.emptyList();
+        }
     }
 
     private AgentContext buildAgentContext(Shop shop, DateRange range) {
@@ -1524,6 +1547,8 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         requestData.put("dateRange", promptContext.getDateRange());
         requestData.put("promptVersion", modelResponse.getPromptVersion());
         requestData.put("toolName", toolExecution == null ? null : toolExecution.getToolName());
+        requestData.put("ragRetrievalMode", promptContext.getRagRetrievalMode());
+        requestData.put("ragHitCount", promptContext.getRagKnowledge() == null ? 0 : promptContext.getRagKnowledge().size());
 
         Map<String, Object> resultData = new LinkedHashMap<>();
         resultData.put("provider", modelResponse.getProvider());

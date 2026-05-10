@@ -109,9 +109,19 @@ public class LangChain4jMerchantAgentModelClient implements MerchantAgentModelCl
                 .replace("{{intentName}}", request.getPromptContext().getIntentName())
                 .replace("{{toolName}}", request.getPromptContext().getSelectedToolName())
                 .replace("{{toolResult}}", toJson(request.getToolExecution().getData()))
+                .replace("{{ragKnowledge}}", buildRagKnowledge(request))
                 .replace("{{recommendation}}", request.getRecommendation() == null ? "暂无" : toJson(request.getRecommendation()))
                 .replace("{{constraints}}", buildConstraints(request))
                 .replace("{{outputRequirement}}", promptTemplateService.outputRequirement(request.getPromptContext().getIntent()));
+    }
+
+    private String buildRagKnowledge(AgentModelRequestDTO request) {
+        if (request.getPromptContext().getRagKnowledge() == null
+                || request.getPromptContext().getRagKnowledge().isEmpty()) {
+            return "暂无召回知识，请只基于工具数据回答，不要编造平台规则。";
+        }
+        return "检索方式：" + request.getPromptContext().getRagRetrievalMode()
+                + "\n知识文档：" + toJson(request.getPromptContext().getRagKnowledge());
     }
 
     private String buildConstraints(AgentModelRequestDTO request) {

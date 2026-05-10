@@ -138,6 +138,34 @@ public class MerchantAgentKnowledgeDocServiceImpl
         return Result.ok(result);
     }
 
+    @Override
+    public List<Map<String, Object>> retrieveForAgent(String intent, String userMessage, Integer limit) {
+        int safeLimit = limit == null || limit <= 0 ? 3 : Math.min(limit, 8);
+        String category = resolveCategoryByIntent(intent);
+        String keyword = resolveKeyword(userMessage, intent);
+        List<AgentKnowledgeDoc> docs = query()
+                .eq("status", 1)
+                .eq(!isBlank(category), "category", category)
+                .and(!isBlank(keyword), wrapper -> wrapper
+                        .like("title", keyword)
+                        .or()
+                        .like("content", keyword))
+                .orderByDesc("update_time")
+                .last("LIMIT " + safeLimit)
+                .list();
+
+        // 如果关键词没有命中，退一步按分类取最近知识，避免 Agent 完全没有运营规则可参考。
+        if (docs.isEmpty() && !isBlank(category)) {
+            docs = query()
+                    .eq("status", 1)
+                    .eq("category", category)
+                    .orderByDesc("update_time")
+                    .last("LIMIT " + safeLimit)
+                    .list();
+        }
+        return toDocRows(docs);
+    }
+
     private Result validateCreateRequest(AgentKnowledgeDocRequest request) {
         if (request == null) {
             return Result.fail("知识文档内容不能为空");
@@ -198,6 +226,53 @@ public class MerchantAgentKnowledgeDocServiceImpl
             return "成本计算规则";
         }
         return "其他知识";
+    }
+
+    private String resolveCategoryByIntent(String intent) {
+        if ("voucher_plan".equals(intent)) {
+            return "seckill_rule";
+        }
+        if ("review_analysis".equals(intent)) {
+            return "industry_case";
+        }
+        if ("order_analysis".equals(intent) || "operation_chat".equals(intent)) {
+            return "cost_rule";
+        }
+        return null;
+    }
+
+    private String resolveKeyword(String userMessage, String intent) {
+        if (containsAny(userMessage, "秒杀", "周末")) {
+            return "秒杀";
+        }
+        if (containsAny(userMessage, "优惠券", "代金券")) {
+            return "优惠券";
+        }
+        if (containsAny(userMessage, "评价", "评论", "口碑")) {
+            return "评价";
+        }
+        if (containsAny(userMessage, "成本", "利润", "收入", "营收")) {
+            return "成本";
+        }
+        if ("voucher_plan".equals(intent)) {
+            return "活动";
+        }
+        if ("review_analysis".equals(intent)) {
+            return "评价";
+        }
+        return "";
+    }
+
+    private boolean containsAny(String text, String... keywords) {
+        if (text == null) {
+            return false;
+        }
+        for (String keyword : keywords) {
+            if (text.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean isBlank(String value) {

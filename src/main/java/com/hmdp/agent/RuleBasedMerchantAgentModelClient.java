@@ -98,9 +98,12 @@ public class RuleBasedMerchantAgentModelClient implements MerchantAgentModelClie
     }
 
     private String buildReasoning(String intent, AgentModelRequestDTO request) {
+        int ragCount = request.getPromptContext().getRagKnowledge() == null
+                ? 0
+                : request.getPromptContext().getRagKnowledge().size();
         return "规则版模型根据意图 " + intent
                 + "，读取工具 " + request.getPromptContext().getSelectedToolName()
-                + " 的结构化结果生成回复。";
+                + " 的结构化结果，并参考 " + ragCount + " 条运营知识生成回复。";
     }
 
     private String formatFen(Long value) {
