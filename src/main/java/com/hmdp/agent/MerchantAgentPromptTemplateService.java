@@ -63,6 +63,16 @@ public class MerchantAgentPromptTemplateService {
     }
 
     /**
+     * 获取 Tool Calling 专用 Prompt 框架。
+     *
+     * <p>普通 chat 是“后端规则选工具 + 模型总结”，Tool Calling 是“模型先选工具”。
+     * 两条链路的 Prompt 关注点不同，所以单独拆一个模板，便于学习和后续调优。</p>
+     */
+    public String toolCallingFrame() {
+        return loadTemplate("tool-calling-frame.md");
+    }
+
+    /**
      * 根据业务意图选择输出要求模板。
      */
     public String outputRequirement(String intent) {

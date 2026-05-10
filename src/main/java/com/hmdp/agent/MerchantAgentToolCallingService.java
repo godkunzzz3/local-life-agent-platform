@@ -117,7 +117,7 @@ public class MerchantAgentToolCallingService {
         List<Map<String, Object>> ragKnowledge = retrieveToolCallingRagKnowledge(userMessage);
         Map<String, Object> promptContext = buildPromptContext(shop, userMessage, ragKnowledge);
 
-        messages.add(SystemMessage.from(buildSystemPrompt(shop, ragKnowledge)));
+        messages.add(SystemMessage.from(buildSystemPrompt(shop, userMessage, ragKnowledge)));
         appendHistoryMessages(messages, historyMessages);
         messages.add(UserMessage.from(userMessage));
         flowTrace.add(flow("receive_message", "接收商家问题", "success",
@@ -205,16 +205,14 @@ public class MerchantAgentToolCallingService {
         return builder.build();
     }
 
-    private String buildSystemPrompt(Shop shop, List<Map<String, Object>> ragKnowledge) {
-        return promptTemplateService.systemPrompt() + "\n\n"
-                + promptTemplateService.behaviorBoundary() + "\n\n"
-                + "【Tool Calling 学习模式】\n"
-                + "- 当前店铺 ID 固定为：" + shop.getId() + "，店铺名称：" + shop.getName() + "。\n"
-                + "- 你只能调用提供的只读工具，不允许要求创建、删除、修改任何业务数据。\n"
-                + "- 如果问题需要经营数据，先调用最相关的工具，再基于工具结果回答。\n"
-                + "- 如果检索到运营知识，选择工具和生成回复时都要结合这些规则，但不能编造规则中没有的数据。\n"
-                + "- 如果数据不足，要明确说明数据不足，不要编造。\n\n"
-                + buildRagPromptSection(ragKnowledge);
+    private String buildSystemPrompt(Shop shop, String userMessage, List<Map<String, Object>> ragKnowledge) {
+        return promptTemplateService.toolCallingFrame()
+                .replace("{{systemPrompt}}", promptTemplateService.systemPrompt())
+                .replace("{{behaviorBoundary}}", promptTemplateService.behaviorBoundary())
+                .replace("{{shopId}}", String.valueOf(shop.getId()))
+                .replace("{{shopName}}", shop.getName())
+                .replace("{{userMessage}}", userMessage)
+                .replace("{{ragKnowledge}}", buildRagPromptSection(ragKnowledge));
     }
 
     private List<ToolSpecification> toolSpecifications() {
@@ -358,9 +356,9 @@ public class MerchantAgentToolCallingService {
 
     private String buildRagPromptSection(List<Map<String, Object>> ragKnowledge) {
         if (ragKnowledge == null || ragKnowledge.isEmpty()) {
-            return "【检索到的运营知识】\n本轮未召回知识库内容，请只基于工具返回的数据回答。";
+            return "本轮未召回知识库内容，请只基于工具返回的数据回答。";
         }
-        StringBuilder builder = new StringBuilder("【检索到的运营知识】\n");
+        StringBuilder builder = new StringBuilder();
         int index = 1;
         for (Map<String, Object> doc : ragKnowledge) {
             builder.append(index++)
