@@ -332,8 +332,12 @@ public class MerchantAgentToolCallingService {
     }
 
     private List<Map<String, Object>> retrieveToolCallingRagKnowledge(String userMessage) {
+        String intent = resolveToolCallingIntent(userMessage);
+        if ("off_topic".equals(intent) || shouldSkipRag(intent, userMessage)) {
+            return new ArrayList<>();
+        }
         try {
-            return agentKnowledgeDocService.retrieveForAgent(resolveToolCallingIntent(userMessage), userMessage, 3);
+            return agentKnowledgeDocService.retrieveForAgent(intent, userMessage, 3);
         } catch (Exception e) {
             // RAG 是增强链路，检索失败时不能阻断 Tool Calling 主流程。
             // 生产环境可在这里补充告警日志，学习阶段先降级为空知识。
@@ -342,16 +346,35 @@ public class MerchantAgentToolCallingService {
     }
 
     private String resolveToolCallingIntent(String userMessage) {
+        if (!isBusinessRelatedQuestion(userMessage)) {
+            return "off_topic";
+        }
         if (containsAny(userMessage, "秒杀", "优惠券", "代金券", "活动", "草稿")) {
             return "voucher_plan";
         }
         if (containsAny(userMessage, "评价", "评论", "口碑", "探店")) {
             return "review_analysis";
         }
-        if (containsAny(userMessage, "订单", "收入", "营收", "成本", "利润", "转化")) {
+        if (containsAny(userMessage, "订单", "收入", "营收", "成本", "利润", "转化", "店铺", "经营", "数据", "分析")) {
             return "order_analysis";
         }
         return "operation_chat";
+    }
+
+    private boolean shouldSkipRag(String intent, String userMessage) {
+        if ("voucher_plan".equals(intent) || "review_analysis".equals(intent)) {
+            return false;
+        }
+        // 订单和店铺数据分析主要依赖实时工具结果。只有商家明确问成本、利润、收入等运营规则时，
+        // 才补充知识库规则，避免泛问题召回“优惠成本”等不相干知识。
+        return "order_analysis".equals(intent)
+                && !containsAny(userMessage, "成本", "利润", "收入", "营收", "优惠成本", "亏");
+    }
+
+    private boolean isBusinessRelatedQuestion(String userMessage) {
+        return containsAny(userMessage,
+                "店铺", "经营", "订单", "数据", "分析", "收入", "营收", "成本", "利润", "转化",
+                "优惠券", "代金券", "秒杀", "活动", "草稿", "评价", "评论", "口碑", "探店", "用户", "客单价");
     }
 
     private String buildRagPromptSection(List<Map<String, Object>> ragKnowledge) {
