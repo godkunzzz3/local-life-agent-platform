@@ -111,11 +111,13 @@ public class MerchantAgentToolCallingService {
 
         long start = System.currentTimeMillis();
         String userMessage = request.getMessage().trim();
+        String intent = resolveToolCallingIntent(userMessage);
         List<AgentFlowStepDTO> flowTrace = new ArrayList<>();
         List<Map<String, Object>> toolCalls = new ArrayList<>();
         List<ChatMessage> messages = new ArrayList<>();
-        List<Map<String, Object>> ragKnowledge = retrieveToolCallingRagKnowledge(userMessage);
-        Map<String, Object> promptContext = buildPromptContext(shop, userMessage, ragKnowledge);
+        List<Map<String, Object>> ragKnowledge = retrieveToolCallingRagKnowledge(intent, userMessage);
+        String ragRetrievalMode = ragKnowledge.isEmpty() ? "skipped_or_no_hit" : "mysql_keyword";
+        Map<String, Object> promptContext = buildPromptContext(shop, userMessage, intent, ragRetrievalMode, ragKnowledge);
 
         messages.add(SystemMessage.from(buildSystemPrompt(shop, userMessage, ragKnowledge)));
         appendHistoryMessages(messages, historyMessages);
@@ -127,13 +129,24 @@ public class MerchantAgentToolCallingService {
                         ? "Tool Calling 本轮未召回知识文档，将只基于工具数据回答"
                         : "Tool Calling 已召回 " + ragKnowledge.size() + " 条运营知识",
                 "knowledge_retrieval", null));
+        if (isProhibitedOperation(userMessage)) {
+            flowTrace.add(flow("guardrail_check", "高风险动作拦截", "success",
+                    "识别到退款、删除、支付核销状态修改或群发等高风险动作，已拒绝直接执行", null, null));
+            Map<String, Object> result = buildResult("这个动作属于高风险操作，我不能直接执行。退款、取消订单、修改支付/核销状态、删除活动或群发消息都需要人工审核流程；我可以先帮你分析数据并生成待确认方案。",
+                    toolCalls, flowTrace, promptContext, start);
+            result.put("provider", "policy_guard");
+            result.put("modelName", "merchant-agent-guardrail");
+            result.put("guardrail", true);
+            return result;
+        }
 
         ChatModel chatModel = buildChatModel();
-        ChatRequest firstRequest = ChatRequest.builder()
-                .messages(messages)
-                .toolSpecifications(toolSpecifications())
-                .toolChoice(ToolChoice.AUTO)
-                .build();
+        ChatRequest.Builder firstRequestBuilder = ChatRequest.builder().messages(messages);
+        if (!"off_topic".equals(intent)) {
+            firstRequestBuilder.toolSpecifications(toolSpecifications())
+                    .toolChoice(ToolChoice.AUTO);
+        }
+        ChatRequest firstRequest = firstRequestBuilder.build();
         ChatResponse firstResponse = chatModel.chat(firstRequest);
         AiMessage aiMessage = firstResponse.aiMessage();
 
@@ -150,20 +163,28 @@ public class MerchantAgentToolCallingService {
 
         for (ToolExecutionRequest toolRequest : aiMessage.toolExecutionRequests()) {
             long toolStart = System.currentTimeMillis();
-            Object toolResult = executeReadonlyTool(shop, toolRequest);
+            Object toolResult;
+            try {
+                toolResult = executeReadonlyTool(shop, toolRequest);
+            } catch (Exception e) {
+                toolResult = toolError("工具执行失败：" + e.getMessage());
+            }
             long costMillis = System.currentTimeMillis() - toolStart;
             String toolResultJson = toJson(toolResult);
+            boolean toolSuccess = !isToolError(toolResult);
 
             Map<String, Object> callRow = new LinkedHashMap<>();
             callRow.put("toolName", toolRequest.name());
             callRow.put("arguments", parseJsonMap(toolRequest.arguments()));
+            callRow.put("success", toolSuccess);
             callRow.put("result", toolResult);
             callRow.put("costMillis", costMillis);
             toolCalls.add(callRow);
 
             messages.add(ToolExecutionResultMessage.from(toolRequest, toolResultJson));
-            flowTrace.add(flow("execute_tool", "执行只读工具", "success",
-                    "已执行工具：" + toolRequest.name(), toolRequest.name(), costMillis));
+            flowTrace.add(flow("execute_tool", "执行只读工具", toolSuccess ? "success" : "failed",
+                    toolSuccess ? "已执行工具：" + toolRequest.name() : String.valueOf(((Map<?, ?>) toolResult).get("error")),
+                    toolRequest.name(), costMillis));
         }
 
         ChatRequest finalRequest = ChatRequest.builder()
@@ -258,7 +279,7 @@ public class MerchantAgentToolCallingService {
         Map<String, Object> args = parseJsonMap(toolRequest.arguments());
         Long requestedShopId = toLong(args.get("shopId"));
         if (requestedShopId != null && !shop.getId().equals(requestedShopId)) {
-            throw new IllegalArgumentException("工具只能查询当前店铺数据，不能跨店铺调用");
+            return toolError("工具只能查询当前店铺数据，不能跨店铺调用。当前店铺ID：" + shop.getId());
         }
 
         String toolName = toolRequest.name();
@@ -292,7 +313,7 @@ public class MerchantAgentToolCallingService {
             result.put("reviewAnalysis", reviewAgentTool.buildReviewAnalysis(blogs, comments));
             return result;
         }
-        throw new IllegalArgumentException("不支持的工具：" + toolName);
+        return toolError("不支持的工具：" + toolName);
     }
 
     private Map<String, Object> buildResult(String answer, List<Map<String, Object>> toolCalls,
@@ -314,14 +335,16 @@ public class MerchantAgentToolCallingService {
         return result;
     }
 
-    private Map<String, Object> buildPromptContext(Shop shop, String userMessage, List<Map<String, Object>> ragKnowledge) {
+    private Map<String, Object> buildPromptContext(Shop shop, String userMessage, String intent,
+                                                   String ragRetrievalMode, List<Map<String, Object>> ragKnowledge) {
         Map<String, Object> context = new LinkedHashMap<>();
         context.put("scene", "merchant_tool_calling_chat");
         context.put("shopId", shop.getId());
         context.put("shopName", shop.getName());
         context.put("userMessage", userMessage);
+        context.put("intent", intent);
         context.put("promptVersion", promptTemplateService.promptVersion());
-        context.put("ragRetrievalMode", "mysql_keyword");
+        context.put("ragRetrievalMode", ragRetrievalMode);
         context.put("ragKnowledge", ragKnowledge);
         context.put("constraints", Arrays.asList(
                 "Tool Calling 模式由模型决定调用哪个只读工具",
@@ -331,9 +354,8 @@ public class MerchantAgentToolCallingService {
         return context;
     }
 
-    private List<Map<String, Object>> retrieveToolCallingRagKnowledge(String userMessage) {
-        String intent = resolveToolCallingIntent(userMessage);
-        if ("off_topic".equals(intent) || shouldSkipRag(intent, userMessage)) {
+    private List<Map<String, Object>> retrieveToolCallingRagKnowledge(String intent, String userMessage) {
+        if ("off_topic".equals(intent) || isProhibitedOperation(userMessage) || shouldSkipRag(intent, userMessage)) {
             return new ArrayList<>();
         }
         try {
@@ -377,6 +399,13 @@ public class MerchantAgentToolCallingService {
                 "优惠券", "代金券", "秒杀", "活动", "草稿", "评价", "评论", "口碑", "探店", "用户", "客单价");
     }
 
+    private boolean isProhibitedOperation(String userMessage) {
+        return containsAny(userMessage,
+                "退款", "退钱", "取消订单", "删除", "删掉", "下架全部", "群发", "批量推送",
+                "修改支付", "改支付", "支付状态", "核销状态", "改核销", "直接核销", "自动核销",
+                "改库存", "清空库存", "修改价格", "改价格");
+    }
+
     private String buildRagPromptSection(List<Map<String, Object>> ragKnowledge) {
         if (ragKnowledge == null || ragKnowledge.isEmpty()) {
             return "本轮未召回知识库内容，请只基于工具返回的数据回答。";
@@ -388,10 +417,21 @@ public class MerchantAgentToolCallingService {
                     .append(". ")
                     .append(String.valueOf(doc.getOrDefault("title", "未命名知识")))
                     .append("：")
-                    .append(String.valueOf(doc.getOrDefault("content", "")))
+                    .append(shortText(String.valueOf(doc.getOrDefault("content", "")), 260))
                     .append("\n");
         }
         return builder.toString();
+    }
+
+    private Map<String, Object> toolError(String errorMessage) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("success", false);
+        result.put("error", errorMessage);
+        return result;
+    }
+
+    private boolean isToolError(Object toolResult) {
+        return toolResult instanceof Map && Boolean.FALSE.equals(((Map<?, ?>) toolResult).get("success"));
     }
 
     private DateRange resolveDateRange(String value) {
@@ -462,6 +502,13 @@ public class MerchantAgentToolCallingService {
             }
         }
         return false;
+    }
+
+    private String shortText(String text, int maxLength) {
+        if (text == null || text.length() <= maxLength) {
+            return text;
+        }
+        return text.substring(0, maxLength) + "...";
     }
 
     private static class DateRange {
