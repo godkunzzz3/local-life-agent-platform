@@ -271,18 +271,18 @@ public class MerchantAgentKnowledgeDocServiceImpl
         // Agent 内部默认只取 Top3，避免把太多知识片段塞进 Prompt 导致成本和噪音上升。
         int safeLimit = limit == null || limit <= 0 ? 3 : Math.min(limit, 8);
 
-        // 先根据意图缩小知识分类范围，例如优惠券方案优先查秒杀/优惠券规则。
-        // 这样做可以减少候选文档数量，也能降低无关知识被召回的概率。
-        String category = resolveCategoryByIntent(intent);
+        // 先根据问题文本和意图缩小候选分类范围。
+        // 注意这里返回的是“候选分类列表”，不是唯一分类，避免普通优惠券问题被硬路由到秒杀规则。
+        List<String> categories = resolveCategoriesForRetrieval(intent, userMessage);
 
         // 第一优先级：语义向量检索。只要命中，就直接返回 TopK。
-        List<Map<String, Object>> vectorHits = retrieveByVector(category, userMessage, safeLimit);
+        List<Map<String, Object>> vectorHits = retrieveByVector(categories, userMessage, safeLimit);
         if (!vectorHits.isEmpty()) {
             return vectorHits;
         }
 
         // 兜底策略：如果向量检索不可用，就回到关键词检索，保证 Agent 主流程仍然可用。
-        return retrieveByKeyword(category, userMessage, intent, safeLimit);
+        return retrieveByKeyword(categories, userMessage, intent, safeLimit);
     }
 
     /**
@@ -294,18 +294,18 @@ public class MerchantAgentKnowledgeDocServiceImpl
      * 3. 用余弦相似度排序，取 TopK；
      * 4. 把相似度分数返回给前端和 PromptContext，方便观察 RAG 命中依据。</p>
      */
-    private List<Map<String, Object>> retrieveByVector(String category, String userMessage, int safeLimit) {
+    private List<Map<String, Object>> retrieveByVector(List<String> categories, String userMessage, int safeLimit) {
         // 1. 把商家输入的问题向量化，例如“帮我设计周末秒杀券” -> queryVector。
         List<Float> queryVector = embeddingService.embedQuery(userMessage);
         if (queryVector == null || queryVector.isEmpty()) {
             return new ArrayList<>();
         }
 
-        // 2. 从 MySQL 读取候选知识文档。这里不取全部，只取启用、已向量化、同分类的近 200 条。
+        // 2. 从 MySQL 读取候选知识文档。这里不取全部，只取启用、已向量化、候选分类内的近 200 条。
         // 学习项目数据量小，可以直接 Java 内存算；生产大规模场景应交给向量数据库做 ANN 检索。
         List<AgentKnowledgeDoc> candidates = query()
                 .eq("status", 1)
-                .eq(!isBlank(category), "category", category)
+                .in(hasCategories(categories), "category", categories)
                 .isNotNull("vector_id")
                 .orderByDesc("update_time")
                 .last("LIMIT 200")
@@ -339,6 +339,7 @@ public class MerchantAgentKnowledgeDocServiceImpl
             // retrievalMode 和 similarityScore 会返回给前端调试面板，便于观察 RAG 是否真的命中。
             row.put("retrievalMode", "semantic_vector");
             row.put("similarityScore", roundScore(scoredDoc.getScore()));
+            row.put("candidateCategories", categories);
             rows.add(row);
         }
         return rows;
@@ -350,12 +351,12 @@ public class MerchantAgentKnowledgeDocServiceImpl
      * <p>当 API Key 未配置、Embedding 服务异常、Redis 中还没有向量时，RAG 不能阻断 Agent 主流程。
      * 所以这里保留原来的 MySQL like 检索，保证学习项目在没有向量库时也能运行。</p>
      */
-    private List<Map<String, Object>> retrieveByKeyword(String category, String userMessage, String intent, int safeLimit) {
+    private List<Map<String, Object>> retrieveByKeyword(List<String> categories, String userMessage, String intent, int safeLimit) {
         // 关键词由简单规则提取，例如“秒杀/周末” -> “秒杀”，“评价/口碑” -> “评价”。
         String keyword = resolveKeyword(userMessage, intent);
         List<AgentKnowledgeDoc> docs = query()
                 .eq("status", 1)
-                .eq(!isBlank(category), "category", category)
+                .in(hasCategories(categories), "category", categories)
                 .and(!isBlank(keyword), wrapper -> wrapper
                         .like("title", keyword)
                         .or()
@@ -364,12 +365,12 @@ public class MerchantAgentKnowledgeDocServiceImpl
                 .last("LIMIT " + safeLimit)
                 .list();
 
-        if (docs.isEmpty() && !isBlank(category)) {
+        if (docs.isEmpty() && hasCategories(categories)) {
             // 如果关键词没命中，但当前意图能映射到分类，就退一步取该分类最近更新的知识。
             // 这样至少能给 Agent 一些行业规则背景，而不是完全没有 RAG 内容。
             docs = query()
                     .eq("status", 1)
-                    .eq("category", category)
+                    .in("category", categories)
                     .orderByDesc("update_time")
                     .last("LIMIT " + safeLimit)
                     .list();
@@ -378,6 +379,7 @@ public class MerchantAgentKnowledgeDocServiceImpl
         List<Map<String, Object>> rows = toDocRows(docs);
         for (Map<String, Object> row : rows) {
             row.put("retrievalMode", "mysql_keyword_fallback");
+            row.put("candidateCategories", categories);
         }
         return rows;
     }
@@ -529,24 +531,64 @@ public class MerchantAgentKnowledgeDocServiceImpl
         return "其他知识";
     }
 
-    private String resolveCategoryByIntent(String intent) {
+    private List<String> resolveCategoriesForRetrieval(String intent, String userMessage) {
+        List<String> categories = new ArrayList<>();
+
+        // 明确提到秒杀、限时抢、周末爆发时，优先召回秒杀规则，同时补充成本规则做利润约束。
+        if (containsAny(userMessage, "秒杀", "限时抢", "抢购", "周末爆发")) {
+            addCategory(categories, "seckill_rule");
+            addCategory(categories, "cost_rule");
+            return categories;
+        }
+
+        // 普通优惠券、代金券、折扣、拉新、复购问题，优先召回普通券规则，而不是秒杀规则。
+        if (containsAny(userMessage, "优惠券", "代金券", "折扣", "打折", "满减", "拉新", "复购", "老客")) {
+            addCategory(categories, "voucher_rule");
+            addCategory(categories, "cost_rule");
+            return categories;
+        }
+
+        if (containsAny(userMessage, "成本", "利润", "毛利", "收入", "营收", "亏")) {
+            addCategory(categories, "cost_rule");
+            addCategory(categories, "voucher_rule");
+            return categories;
+        }
+
+        if (containsAny(userMessage, "评价", "评论", "口碑", "探店", "内容")) {
+            addCategory(categories, "industry_case");
+            return categories;
+        }
+
+        if (containsAny(userMessage, "风险", "人工确认", "群发", "退款", "删除", "核销", "库存")) {
+            addCategory(categories, "risk_rule");
+            addCategory(categories, "cost_rule");
+            return categories;
+        }
+
         if ("voucher_plan".equals(intent)) {
-            return "seckill_rule";
+            addCategory(categories, "voucher_rule");
+            addCategory(categories, "seckill_rule");
+            addCategory(categories, "cost_rule");
+            return categories;
         }
         if ("review_analysis".equals(intent)) {
-            return "industry_case";
+            addCategory(categories, "industry_case");
+            return categories;
         }
         if ("order_analysis".equals(intent) || "operation_chat".equals(intent)) {
-            return "cost_rule";
+            addCategory(categories, "cost_rule");
+            addCategory(categories, "voucher_rule");
+            addCategory(categories, "industry_case");
+            return categories;
         }
-        return null;
+        return categories;
     }
 
     private String resolveKeyword(String userMessage, String intent) {
-        if (containsAny(userMessage, "秒杀", "周末")) {
+        if (containsAny(userMessage, "秒杀", "限时抢", "抢购", "周末")) {
             return "秒杀";
         }
-        if (containsAny(userMessage, "优惠券", "代金券")) {
+        if (containsAny(userMessage, "优惠券", "代金券", "折扣", "打折", "满减", "拉新", "复购")) {
             return "优惠券";
         }
         if (containsAny(userMessage, "评价", "评论", "口碑")) {
@@ -562,6 +604,16 @@ public class MerchantAgentKnowledgeDocServiceImpl
             return "评价";
         }
         return "";
+    }
+
+    private void addCategory(List<String> categories, String category) {
+        if (!categories.contains(category)) {
+            categories.add(category);
+        }
+    }
+
+    private boolean hasCategories(List<String> categories) {
+        return categories != null && !categories.isEmpty();
     }
 
     private boolean containsAny(String text, String... keywords) {
