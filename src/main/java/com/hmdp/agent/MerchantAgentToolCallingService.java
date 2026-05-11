@@ -187,6 +187,7 @@ public class MerchantAgentToolCallingService {
                     toolRequest.name(), costMillis));
         }
 
+        messages.add(UserMessage.from(buildFinalAnswerInstruction(ragKnowledge)));
         ChatRequest finalRequest = ChatRequest.builder()
                 .messages(messages)
                 .build();
@@ -355,7 +356,7 @@ public class MerchantAgentToolCallingService {
     }
 
     private List<Map<String, Object>> retrieveToolCallingRagKnowledge(String intent, String userMessage) {
-        if ("off_topic".equals(intent) || isProhibitedOperation(userMessage) || shouldSkipRag(intent, userMessage)) {
+        if ("off_topic".equals(intent) || isProhibitedOperation(userMessage)) {
             return new ArrayList<>();
         }
         try {
@@ -389,16 +390,6 @@ public class MerchantAgentToolCallingService {
             return "order_analysis";
         }
         return "operation_chat";
-    }
-
-    private boolean shouldSkipRag(String intent, String userMessage) {
-        if ("voucher_plan".equals(intent) || "review_analysis".equals(intent)) {
-            return false;
-        }
-        // 订单和店铺数据分析主要依赖实时工具结果。只有商家明确问成本、利润、收入等运营规则时，
-        // 才补充知识库规则，避免泛问题召回“优惠成本”等不相干知识。
-        return "order_analysis".equals(intent)
-                && !containsAny(userMessage, "成本", "利润", "收入", "营收", "优惠成本", "亏");
     }
 
     private boolean isBusinessRelatedQuestion(String userMessage) {
@@ -436,6 +427,15 @@ public class MerchantAgentToolCallingService {
                     .append("\n");
         }
         return builder.toString();
+    }
+
+    private String buildFinalAnswerInstruction(List<Map<String, Object>> ragKnowledge) {
+        String knowledgeRequirement = ragKnowledge == null || ragKnowledge.isEmpty()
+                ? "本轮没有知识库依据，必须只基于工具结果回答。"
+                : "本轮已经召回知识库依据，必须把工具数据和知识库规则结合起来回答，并明确写出“依据知识库规则”。";
+        return "请现在生成最终回复，不要只说明调用了工具。"
+                + knowledgeRequirement
+                + "输出结构固定为：1）数据判断；2）知识依据；3）下一步动作。";
     }
 
     private Map<String, Object> toolError(String errorMessage) {
