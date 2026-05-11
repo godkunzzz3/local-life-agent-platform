@@ -2,6 +2,7 @@ package com.hmdp.service;
 
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.hmdp.dto.AgentKnowledgeDocRequest;
+import com.hmdp.dto.AgentKnowledgeEvaluateRequest;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.AgentKnowledgeDoc;
 import org.springframework.web.multipart.MultipartFile;
@@ -67,6 +68,13 @@ public interface IMerchantAgentKnowledgeDocService extends IService<AgentKnowled
      * 它不调用大模型，也不生成最终回复。</p>
      */
     Result debugRetrieveForAgent(String intent, String userMessage, Integer limit);
+
+    /**
+     * RAG 召回批量评测。
+     *
+     * <p>用于验证一批测试问题的 TopK 召回是否命中预期分类，帮助持续改进知识库和召回策略。</p>
+     */
+    Result evaluateRetrieval(AgentKnowledgeEvaluateRequest request);
 
     /**
      * Agent 内部 RAG 检索入口。

@@ -3,6 +3,7 @@ package com.hmdp.service.impl;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.agent.MerchantAgentEmbeddingService;
 import com.hmdp.dto.AgentKnowledgeDocRequest;
+import com.hmdp.dto.AgentKnowledgeEvaluateRequest;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.AgentKnowledgeDoc;
 import com.hmdp.mapper.AgentKnowledgeDocMapper;
@@ -16,6 +17,7 @@ import javax.annotation.Resource;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -263,6 +265,38 @@ public class MerchantAgentKnowledgeDocServiceImpl
         result.put("explain", hits.isEmpty()
                 ? "没有召回知识。请确认知识文档已启用并完成向量化，或补充更相关的运营知识。"
                 : "已使用与 Agent 对话相同的 RAG 召回链路返回 TopK 知识。");
+        return Result.ok(result);
+    }
+
+    @Override
+    public Result evaluateRetrieval(AgentKnowledgeEvaluateRequest request) {
+        int safeLimit = request == null || request.getLimit() == null || request.getLimit() <= 0
+                ? 3
+                : Math.min(request.getLimit(), 8);
+        List<AgentKnowledgeEvaluateRequest.CaseItem> cases = request == null
+                || request.getCases() == null
+                || request.getCases().isEmpty()
+                ? defaultEvaluationCases()
+                : request.getCases();
+
+        List<Map<String, Object>> rows = new ArrayList<>();
+        int passCount = 0;
+        for (AgentKnowledgeEvaluateRequest.CaseItem item : cases) {
+            Map<String, Object> row = evaluateOneCase(item, safeLimit);
+            rows.add(row);
+            if (Boolean.TRUE.equals(row.get("passed"))) {
+                passCount++;
+            }
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("total", rows.size());
+        result.put("passCount", passCount);
+        result.put("failCount", rows.size() - passCount);
+        result.put("passRate", rows.isEmpty() ? "0.00%" : String.format("%.2f%%", passCount * 100.0 / rows.size()));
+        result.put("limit", safeLimit);
+        result.put("items", rows);
+        result.put("explain", "评测口径：TopK 召回文档中只要命中任意一个期望分类，即视为通过。");
         return Result.ok(result);
     }
 
@@ -639,6 +673,76 @@ public class MerchantAgentKnowledgeDocServiceImpl
     private double roundScore(double score) {
         // 前端只需要观察相似度大致水平，保留 4 位小数即可。
         return Math.round(score * 10000D) / 10000D;
+    }
+
+    private Map<String, Object> evaluateOneCase(AgentKnowledgeEvaluateRequest.CaseItem item, int safeLimit) {
+        String message = item == null || isBlank(item.getMessage()) ? "" : item.getMessage().trim();
+        String intent = item == null || isBlank(item.getIntent()) ? "operation_chat" : item.getIntent().trim();
+        List<String> expectedCategories = item == null || item.getExpectedCategories() == null
+                ? new ArrayList<>()
+                : item.getExpectedCategories();
+        List<Map<String, Object>> hits = isBlank(message)
+                ? new ArrayList<>()
+                : retrieveForAgent(intent, message, safeLimit);
+
+        List<String> hitCategories = new ArrayList<>();
+        List<Map<String, Object>> topDocs = new ArrayList<>();
+        for (Map<String, Object> hit : hits) {
+            String category = String.valueOf(hit.getOrDefault("category", ""));
+            addCategory(hitCategories, category);
+
+            Map<String, Object> doc = new LinkedHashMap<>();
+            doc.put("docId", hit.get("docId"));
+            doc.put("title", hit.get("title"));
+            doc.put("category", hit.get("category"));
+            doc.put("categoryName", hit.get("categoryName"));
+            doc.put("similarityScore", hit.get("similarityScore"));
+            doc.put("retrievalMode", hit.get("retrievalMode"));
+            topDocs.add(doc);
+        }
+
+        boolean passed = hasIntersection(expectedCategories, hitCategories);
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("message", message);
+        row.put("intent", intent);
+        row.put("expectedCategories", expectedCategories);
+        row.put("hitCategories", hitCategories);
+        row.put("retrievalMode", resolveRetrievalMode(hits));
+        row.put("top1", topDocs.isEmpty() ? null : topDocs.get(0));
+        row.put("topK", topDocs);
+        row.put("passed", passed);
+        row.put("reason", passed ? "TopK 命中期望分类" : "TopK 未命中期望分类，需要补充知识或调整召回策略");
+        return row;
+    }
+
+    private List<AgentKnowledgeEvaluateRequest.CaseItem> defaultEvaluationCases() {
+        List<AgentKnowledgeEvaluateRequest.CaseItem> cases = new ArrayList<>();
+        cases.add(caseItem("帮我设计一张周末秒杀券", "voucher_plan", "seckill_rule", "cost_rule"));
+        cases.add(caseItem("优惠券折扣不要太低但要吸引人", "voucher_plan", "voucher_rule", "cost_rule"));
+        cases.add(caseItem("最近订单少应该先检查什么", "order_analysis", "cost_rule", "voucher_rule"));
+        cases.add(caseItem("KTV评价说排队久怎么办", "review_analysis", "industry_case"));
+        cases.add(caseItem("哪些操作必须人工确认", "operation_chat", "risk_rule"));
+        return cases;
+    }
+
+    private AgentKnowledgeEvaluateRequest.CaseItem caseItem(String message, String intent, String... categories) {
+        AgentKnowledgeEvaluateRequest.CaseItem item = new AgentKnowledgeEvaluateRequest.CaseItem();
+        item.setMessage(message);
+        item.setIntent(intent);
+        item.setExpectedCategories(Arrays.asList(categories));
+        return item;
+    }
+
+    private boolean hasIntersection(List<String> left, List<String> right) {
+        if (left == null || right == null) {
+            return false;
+        }
+        for (String item : left) {
+            if (right.contains(item)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String resolveRetrievalMode(List<Map<String, Object>> hits) {

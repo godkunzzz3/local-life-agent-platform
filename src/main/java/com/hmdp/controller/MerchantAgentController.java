@@ -1,6 +1,7 @@
 package com.hmdp.controller;
 
 import com.hmdp.dto.AgentKnowledgeDocRequest;
+import com.hmdp.dto.AgentKnowledgeEvaluateRequest;
 import com.hmdp.dto.AgentKnowledgeRetrieveRequest;
 import com.hmdp.dto.MerchantOperationReportRequest;
 import com.hmdp.dto.MerchantCampaignDraftRequest;
@@ -140,6 +141,17 @@ public class MerchantAgentController {
         }
         return merchantAgentKnowledgeDocService.debugRetrieveForAgent(
                 request.getIntent(), request.getMessage(), request.getLimit());
+    }
+
+    /**
+     * 批量评测 RAG 召回质量。
+     *
+     * <p>这个接口用于学习和调试 RAG：批量输入测试问题和期望分类，
+     * 后端返回 TopK 是否命中，帮助判断召回策略是否稳定。</p>
+     */
+    @PostMapping("/knowledge-docs/evaluate")
+    public Result evaluateKnowledgeRetrieval(@RequestBody(required = false) AgentKnowledgeEvaluateRequest request) {
+        return merchantAgentKnowledgeDocService.evaluateRetrieval(request);
     }
 
     /**
