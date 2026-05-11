@@ -51,6 +51,16 @@ public interface IMerchantAgentKnowledgeDocService extends IService<AgentKnowled
     Result uploadKnowledgeDoc(String category, String title, MultipartFile file);
 
     /**
+     * 向量化单条知识 chunk。
+     */
+    Result vectorizeKnowledgeDoc(Long docId);
+
+    /**
+     * 批量向量化启用状态的知识 chunk。
+     */
+    Result vectorizeKnowledgeDocs(String category, Integer limit);
+
+    /**
      * Agent 内部 RAG 检索入口。
      *
      * <p>返回 Map 是为了方便直接放进 PromptContext 和前端调试面板。后续接向量库时，

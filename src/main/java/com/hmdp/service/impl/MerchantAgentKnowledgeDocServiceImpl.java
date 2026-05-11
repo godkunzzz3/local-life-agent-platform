@@ -1,6 +1,7 @@
 package com.hmdp.service.impl;
 
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.hmdp.agent.MerchantAgentEmbeddingService;
 import com.hmdp.dto.AgentKnowledgeDocRequest;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.AgentKnowledgeDoc;
@@ -35,6 +36,8 @@ public class MerchantAgentKnowledgeDocServiceImpl
 
     @Resource
     private RedisIdWorker redisIdWorker;
+    @Resource
+    private MerchantAgentEmbeddingService embeddingService;
 
     @Override
     public Result createKnowledgeDoc(AgentKnowledgeDocRequest request) {
@@ -180,6 +183,62 @@ public class MerchantAgentKnowledgeDocServiceImpl
         } catch (IOException e) {
             return Result.fail("读取知识文件失败，请确认文件编码为UTF-8");
         }
+    }
+
+    @Override
+    public Result vectorizeKnowledgeDoc(Long docId) {
+        if (docId == null) {
+            return Result.fail("知识文档id不能为空");
+        }
+        AgentKnowledgeDoc doc = getById(docId);
+        if (doc == null) {
+            return Result.fail("知识文档不存在");
+        }
+        Result result = embeddingService.embedKnowledgeDoc(doc);
+        if (!result.getSuccess()) {
+            return result;
+        }
+        Map<String, Object> vectorInfo = (Map<String, Object>) result.getData();
+        String vectorId = String.valueOf(vectorInfo.get("vectorId"));
+        updateById(new AgentKnowledgeDoc().setId(docId).setVectorId(vectorId));
+        doc.setVectorId(vectorId);
+        vectorInfo.put("document", toDocRow(doc));
+        return Result.ok(vectorInfo);
+    }
+
+    @Override
+    public Result vectorizeKnowledgeDocs(String category, Integer limit) {
+        int safeLimit = limit == null || limit <= 0 ? 20 : Math.min(limit, 100);
+        List<AgentKnowledgeDoc> docs = query()
+                .eq("status", 1)
+                .eq(!isBlank(category), "category", category)
+                .last("LIMIT " + safeLimit)
+                .list();
+
+        List<Map<String, Object>> rows = new ArrayList<>();
+        int successCount = 0;
+        for (AgentKnowledgeDoc doc : docs) {
+            Result result = vectorizeKnowledgeDoc(doc.getId());
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("docId", String.valueOf(doc.getId()));
+            row.put("title", doc.getTitle());
+            row.put("success", result.getSuccess());
+            row.put("data", result.getData());
+            row.put("errorMsg", result.getErrorMsg());
+            rows.add(row);
+            if (result.getSuccess()) {
+                successCount++;
+            }
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("category", category);
+        result.put("limit", safeLimit);
+        result.put("total", docs.size());
+        result.put("successCount", successCount);
+        result.put("failedCount", docs.size() - successCount);
+        result.put("items", rows);
+        return Result.ok(result);
     }
 
     @Override

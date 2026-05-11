@@ -105,6 +105,28 @@ public class MerchantAgentController {
     }
 
     /**
+     * 向量化单条知识 chunk。
+     *
+     * <p>这一步会调用 Embedding 模型，把知识正文转成向量，向量本体存 Redis，
+     * MySQL 的 vector_id 字段保存 Redis key。</p>
+     */
+    @PostMapping("/knowledge-docs/{docId}/vectorize")
+    public Result vectorizeKnowledgeDoc(@PathVariable("docId") Long docId) {
+        return merchantAgentKnowledgeDocService.vectorizeKnowledgeDoc(docId);
+    }
+
+    /**
+     * 批量向量化启用知识。
+     *
+     * <p>学习阶段保留 limit 参数，避免一次性调用过多 Embedding API 消耗额度。</p>
+     */
+    @PostMapping("/knowledge-docs/vectorize")
+    public Result vectorizeKnowledgeDocs(@RequestParam(value = "category", required = false) String category,
+                                         @RequestParam(value = "limit", required = false) Integer limit) {
+        return merchantAgentKnowledgeDocService.vectorizeKnowledgeDocs(category, limit);
+    }
+
+    /**
      * 生成店铺运营报告。
      *
      * <p>这是 MerchantOperationAgent 的第一个接口。当前先使用 Java 规则生成报告，

@@ -39,3 +39,11 @@ merchant-agent:
     model-name: qwen-turbo
     temperature: 0.3
     max-tokens: 800
+  embedding:
+    # Embedding 与聊天模型共用 DashScope API Key。后续也可以单独配置 merchant-agent.embedding.api-key。
+    api-key: ${DASHSCOPE_API_KEY:}
+    base-url:
+    # 第一版使用 Qwen/DashScope 文本向量模型。生成的向量本体保存在 Redis，MySQL 只保存 vector_id。
+    model-name: text-embedding-v4
+    # 留空时使用模型默认维度；如果账号模型要求固定维度，可以在这里配置。
+    dimension:
