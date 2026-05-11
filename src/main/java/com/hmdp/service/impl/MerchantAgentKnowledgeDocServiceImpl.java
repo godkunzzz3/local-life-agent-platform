@@ -31,6 +31,7 @@ public class MerchantAgentKnowledgeDocServiceImpl
         implements IMerchantAgentKnowledgeDocService {
 
     private static final long MAX_UPLOAD_SIZE = 256 * 1024;
+    private static final int MAX_CHUNK_LENGTH = 500;
 
     @Resource
     private RedisIdWorker redisIdWorker;
@@ -156,12 +157,26 @@ public class MerchantAgentKnowledgeDocServiceImpl
             if (isBlank(content)) {
                 return Result.fail("上传文件内容不能为空");
             }
-            AgentKnowledgeDocRequest request = new AgentKnowledgeDocRequest();
-            request.setCategory(category.trim());
-            request.setTitle(resolveUploadTitle(title, file.getOriginalFilename()));
-            request.setContent(content);
-            request.setStatus(1);
-            return createKnowledgeDoc(request);
+            String baseTitle = resolveUploadTitle(title, file.getOriginalFilename());
+            List<String> chunks = splitKnowledgeContent(content);
+            List<AgentKnowledgeDoc> docs = new ArrayList<>();
+            for (int i = 0; i < chunks.size(); i++) {
+                AgentKnowledgeDoc doc = new AgentKnowledgeDoc()
+                        .setId(redisIdWorker.nextId("agent"))
+                        .setTitle(buildChunkTitle(baseTitle, i + 1, chunks.size()))
+                        .setCategory(category.trim())
+                        .setContent(chunks.get(i))
+                        .setStatus(1);
+                docs.add(doc);
+            }
+            saveBatch(docs);
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("sourceTitle", baseTitle);
+            result.put("chunkCount", docs.size());
+            result.put("documents", toDocRows(docs));
+            result.put("message", "知识文件已切分为 " + docs.size() + " 个片段并导入");
+            return Result.ok(result);
         } catch (IOException e) {
             return Result.fail("读取知识文件失败，请确认文件编码为UTF-8");
         }
@@ -246,6 +261,57 @@ public class MerchantAgentKnowledgeDocServiceImpl
         int dotIndex = fileName.lastIndexOf('.');
         String baseName = dotIndex > 0 ? fileName.substring(0, dotIndex) : fileName;
         return isBlank(baseName) ? "未命名知识文档" : baseName.trim();
+    }
+
+    private List<String> splitKnowledgeContent(String content) {
+        List<String> chunks = new ArrayList<>();
+        String normalized = content.replace("\r\n", "\n").replace("\r", "\n");
+        String[] paragraphs = normalized.split("\\n\\s*\\n");
+        StringBuilder current = new StringBuilder();
+        for (String paragraph : paragraphs) {
+            String text = paragraph.trim();
+            if (isBlank(text)) {
+                continue;
+            }
+            if (text.length() > MAX_CHUNK_LENGTH) {
+                flushChunk(chunks, current);
+                splitLongParagraph(chunks, text);
+                continue;
+            }
+            if (current.length() > 0 && current.length() + text.length() + 2 > MAX_CHUNK_LENGTH) {
+                flushChunk(chunks, current);
+            }
+            if (current.length() > 0) {
+                current.append("\n\n");
+            }
+            current.append(text);
+        }
+        flushChunk(chunks, current);
+        return chunks.isEmpty() ? java.util.Collections.singletonList(content.trim()) : chunks;
+    }
+
+    private void splitLongParagraph(List<String> chunks, String text) {
+        int start = 0;
+        while (start < text.length()) {
+            int end = Math.min(start + MAX_CHUNK_LENGTH, text.length());
+            chunks.add(text.substring(start, end).trim());
+            start = end;
+        }
+    }
+
+    private void flushChunk(List<String> chunks, StringBuilder current) {
+        if (current.length() == 0) {
+            return;
+        }
+        chunks.add(current.toString().trim());
+        current.setLength(0);
+    }
+
+    private String buildChunkTitle(String baseTitle, int index, int total) {
+        if (total <= 1) {
+            return baseTitle;
+        }
+        return baseTitle + " #" + index;
     }
 
     private List<Map<String, Object>> toDocRows(List<AgentKnowledgeDoc> docs) {
