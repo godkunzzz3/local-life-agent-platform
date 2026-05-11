@@ -8,6 +8,7 @@ import com.hmdp.dto.Result;
 import com.hmdp.service.IMerchantAgentFacadeService;
 import com.hmdp.service.IMerchantAgentKnowledgeDocService;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import javax.annotation.Resource;
 
@@ -88,6 +89,19 @@ public class MerchantAgentController {
                                       @RequestParam(value = "keyword", required = false) String keyword,
                                       @RequestParam(value = "limit", required = false) Integer limit) {
         return merchantAgentKnowledgeDocService.searchKnowledgeDocs(category, keyword, limit);
+    }
+
+    /**
+     * 上传 txt/md 文件导入知识库。
+     *
+     * <p>这是 RAG 知识摄入的第一版：只处理纯文本文件，一份文件导入为一条知识文档。
+     * 后续支持 PDF/DOCX 时，再增加文档解析、切片和向量化。</p>
+     */
+    @PostMapping("/knowledge-docs/upload")
+    public Result uploadKnowledgeDoc(@RequestParam("category") String category,
+                                     @RequestParam(value = "title", required = false) String title,
+                                     @RequestParam("file") MultipartFile file) {
+        return merchantAgentKnowledgeDocService.uploadKnowledgeDoc(category, title, file);
     }
 
     /**

@@ -8,12 +8,16 @@ import com.hmdp.mapper.AgentKnowledgeDocMapper;
 import com.hmdp.service.IMerchantAgentKnowledgeDocService;
 import com.hmdp.utils.RedisIdWorker;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StreamUtils;
+import org.springframework.web.multipart.MultipartFile;
 
 import javax.annotation.Resource;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.nio.charset.StandardCharsets;
 
 /**
  * 商家运营 Agent 知识库文档服务实现。
@@ -25,6 +29,8 @@ import java.util.Map;
 public class MerchantAgentKnowledgeDocServiceImpl
         extends ServiceImpl<AgentKnowledgeDocMapper, AgentKnowledgeDoc>
         implements IMerchantAgentKnowledgeDocService {
+
+    private static final long MAX_UPLOAD_SIZE = 256 * 1024;
 
     @Resource
     private RedisIdWorker redisIdWorker;
@@ -139,6 +145,29 @@ public class MerchantAgentKnowledgeDocServiceImpl
     }
 
     @Override
+    public Result uploadKnowledgeDoc(String category, String title, MultipartFile file) {
+        Result validateResult = validateUploadRequest(category, file);
+        if (!validateResult.getSuccess()) {
+            return validateResult;
+        }
+
+        try {
+            String content = new String(StreamUtils.copyToByteArray(file.getInputStream()), StandardCharsets.UTF_8).trim();
+            if (isBlank(content)) {
+                return Result.fail("上传文件内容不能为空");
+            }
+            AgentKnowledgeDocRequest request = new AgentKnowledgeDocRequest();
+            request.setCategory(category.trim());
+            request.setTitle(resolveUploadTitle(title, file.getOriginalFilename()));
+            request.setContent(content);
+            request.setStatus(1);
+            return createKnowledgeDoc(request);
+        } catch (IOException e) {
+            return Result.fail("读取知识文件失败，请确认文件编码为UTF-8");
+        }
+    }
+
+    @Override
     public List<Map<String, Object>> retrieveForAgent(String intent, String userMessage, Integer limit) {
         int safeLimit = limit == null || limit <= 0 ? 3 : Math.min(limit, 8);
         String category = resolveCategoryByIntent(intent);
@@ -183,6 +212,40 @@ public class MerchantAgentKnowledgeDocServiceImpl
             return Result.fail("知识文档状态只能是启用或停用");
         }
         return Result.ok();
+    }
+
+    private Result validateUploadRequest(String category, MultipartFile file) {
+        if (isBlank(category)) {
+            return Result.fail("知识分类不能为空");
+        }
+        if (file == null || file.isEmpty()) {
+            return Result.fail("请选择要上传的知识文件");
+        }
+        if (file.getSize() > MAX_UPLOAD_SIZE) {
+            return Result.fail("知识文件不能超过256KB");
+        }
+        String fileName = file.getOriginalFilename();
+        if (isBlank(fileName) || !isAllowedTextFile(fileName)) {
+            return Result.fail("仅支持上传 .txt 或 .md 文件");
+        }
+        return Result.ok();
+    }
+
+    private boolean isAllowedTextFile(String fileName) {
+        String lowerName = fileName.toLowerCase();
+        return lowerName.endsWith(".txt") || lowerName.endsWith(".md");
+    }
+
+    private String resolveUploadTitle(String title, String fileName) {
+        if (!isBlank(title)) {
+            return title.trim();
+        }
+        if (isBlank(fileName)) {
+            return "未命名知识文档";
+        }
+        int dotIndex = fileName.lastIndexOf('.');
+        String baseName = dotIndex > 0 ? fileName.substring(0, dotIndex) : fileName;
+        return isBlank(baseName) ? "未命名知识文档" : baseName.trim();
     }
 
     private List<Map<String, Object>> toDocRows(List<AgentKnowledgeDoc> docs) {

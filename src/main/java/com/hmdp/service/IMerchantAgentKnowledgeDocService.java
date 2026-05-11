@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.extension.service.IService;
 import com.hmdp.dto.AgentKnowledgeDocRequest;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.AgentKnowledgeDoc;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 import java.util.Map;
@@ -40,6 +41,14 @@ public interface IMerchantAgentKnowledgeDocService extends IService<AgentKnowled
      * RAG 第一版检索入口：用分类 + 关键词召回知识文档。
      */
     Result searchKnowledgeDocs(String category, String keyword, Integer limit);
+
+    /**
+     * 从 txt/md 文件导入知识文档。
+     *
+     * <p>第一版只接收纯文本文件，避免 PDF/DOCX 解析复杂度干扰 RAG 主线。
+     * 后续接文档解析和切片时，可以继续扩展这个入口。</p>
+     */
+    Result uploadKnowledgeDoc(String category, String title, MultipartFile file);
 
     /**
      * Agent 内部 RAG 检索入口。
