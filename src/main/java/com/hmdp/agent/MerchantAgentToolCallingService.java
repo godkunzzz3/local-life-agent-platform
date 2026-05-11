@@ -151,7 +151,7 @@ public class MerchantAgentToolCallingService {
         AiMessage aiMessage = firstResponse.aiMessage();
 
         if (aiMessage == null || !aiMessage.hasToolExecutionRequests()) {
-            String answer = aiMessage == null ? "模型未返回有效回复。" : aiMessage.text();
+            String answer = aiMessage == null ? "模型未返回有效回复。" : sanitizeMerchantReply(aiMessage.text());
             flowTrace.add(flow("select_tool", "模型选择工具", "skipped",
                     "模型没有请求工具调用，直接生成回复", null, null));
             return buildResult(answer, toolCalls, flowTrace, promptContext, start);
@@ -192,7 +192,7 @@ public class MerchantAgentToolCallingService {
                 .messages(messages)
                 .build();
         ChatResponse finalResponse = chatModel.chat(finalRequest);
-        String answer = finalResponse.aiMessage() == null ? "模型未返回最终回复。" : finalResponse.aiMessage().text();
+        String answer = finalResponse.aiMessage() == null ? "模型未返回最终回复。" : sanitizeMerchantReply(finalResponse.aiMessage().text());
         flowTrace.add(flow("generate_reply", "生成最终回复", "success",
                 "模型已基于工具结果生成最终回复", null, null));
         return buildResult(answer, toolCalls, flowTrace, promptContext, start);
@@ -433,9 +433,28 @@ public class MerchantAgentToolCallingService {
         String knowledgeRequirement = ragKnowledge == null || ragKnowledge.isEmpty()
                 ? "本轮没有知识库依据，必须只基于工具结果回答。"
                 : "本轮已经召回知识库依据，必须把工具数据和知识库规则结合起来回答，并明确写出“依据知识库规则”。";
-        return "请现在生成最终回复，不要只说明调用了工具。"
+        return "请现在生成最终回复。面向商家的回复中禁止出现内部工具名、函数名、tool calling、getShopOrderStats、getShopProfile、getShopVouchers、getShopReviewSummary，也不要说“我调用了某工具”。"
                 + knowledgeRequirement
                 + "输出结构固定为：1）数据判断；2）知识依据；3）下一步动作。";
+    }
+
+    private String sanitizeMerchantReply(String reply) {
+        if (reply == null) {
+            return "";
+        }
+        return reply
+                .replace("getShopOrderStats", "订单统计")
+                .replace("getShopProfile", "店铺信息")
+                .replace("getShopVouchers", "优惠券数据")
+                .replace("getShopReviewSummary", "评价摘要")
+                .replace("Tool Calling", "智能分析")
+                .replace("tool calling", "智能分析")
+                .replace("调用了订单统计工具，", "")
+                .replace("调用了订单统计工具", "")
+                .replace("调用了工具，", "")
+                .replace("调用了工具", "")
+                .replace("我调用了", "我已查看")
+                .trim();
     }
 
     private Map<String, Object> toolError(String errorMessage) {
