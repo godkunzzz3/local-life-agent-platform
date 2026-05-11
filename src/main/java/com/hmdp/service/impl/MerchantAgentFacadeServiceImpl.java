@@ -898,7 +898,7 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
                 .setConstraints(constraints)
                 .setOutputFormat(promptTemplateService.outputRequirement(intent))
                 .setRagKnowledge(ragKnowledge)
-                .setRagRetrievalMode("mysql_keyword");
+                .setRagRetrievalMode(resolveRagRetrievalMode(ragKnowledge));
     }
 
     private AgentFlowStepDTO buildFlowStep(String stepCode, String stepName, String status,
@@ -920,6 +920,14 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
             // 企业项目里这类增强链路通常要降级为空知识，并在日志中排查。
             return Collections.emptyList();
         }
+    }
+
+    private String resolveRagRetrievalMode(List<Map<String, Object>> ragKnowledge) {
+        if (ragKnowledge == null || ragKnowledge.isEmpty()) {
+            return "skipped_or_no_hit";
+        }
+        Object mode = ragKnowledge.get(0).get("retrievalMode");
+        return mode == null ? "unknown" : String.valueOf(mode);
     }
 
     private AgentContext buildAgentContext(Shop shop, DateRange range) {

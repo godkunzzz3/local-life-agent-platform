@@ -15,6 +15,7 @@ import org.springframework.web.multipart.MultipartFile;
 import javax.annotation.Resource;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,8 +24,8 @@ import java.nio.charset.StandardCharsets;
 /**
  * 商家运营 Agent 知识库文档服务实现。
  *
- * <p>当前是 RAG 的最小可行版本：文档保存在 MySQL，检索使用标题/正文关键词匹配。
- * 这一步先让知识库具备“可维护、可查询、可被 Agent 读取”的业务闭环。</p>
+ * <p>当前是 RAG 的学习版实现：文档元数据保存在 MySQL，向量保存在 Redis。
+ * Agent 检索时优先使用向量相似度召回，失败时降级为标题/正文关键词匹配。</p>
  */
 @Service
 public class MerchantAgentKnowledgeDocServiceImpl
@@ -243,8 +244,90 @@ public class MerchantAgentKnowledgeDocServiceImpl
 
     @Override
     public List<Map<String, Object>> retrieveForAgent(String intent, String userMessage, Integer limit) {
+        // Agent 内部默认只取 Top3，避免把太多知识片段塞进 Prompt 导致成本和噪音上升。
         int safeLimit = limit == null || limit <= 0 ? 3 : Math.min(limit, 8);
+
+        // 先根据意图缩小知识分类范围，例如优惠券方案优先查秒杀/优惠券规则。
+        // 这样做可以减少候选文档数量，也能降低无关知识被召回的概率。
         String category = resolveCategoryByIntent(intent);
+
+        // 第一优先级：语义向量检索。只要命中，就直接返回 TopK。
+        List<Map<String, Object>> vectorHits = retrieveByVector(category, userMessage, safeLimit);
+        if (!vectorHits.isEmpty()) {
+            return vectorHits;
+        }
+
+        // 兜底策略：如果向量检索不可用，就回到关键词检索，保证 Agent 主流程仍然可用。
+        return retrieveByKeyword(category, userMessage, intent, safeLimit);
+    }
+
+    /**
+     * 语义向量召回。
+     *
+     * <p>业务逻辑：
+     * 1. 先把商家问题转换成 query 向量；
+     * 2. 再读取同分类知识 chunk 的 doc 向量；
+     * 3. 用余弦相似度排序，取 TopK；
+     * 4. 把相似度分数返回给前端和 PromptContext，方便观察 RAG 命中依据。</p>
+     */
+    private List<Map<String, Object>> retrieveByVector(String category, String userMessage, int safeLimit) {
+        // 1. 把商家输入的问题向量化，例如“帮我设计周末秒杀券” -> queryVector。
+        List<Float> queryVector = embeddingService.embedQuery(userMessage);
+        if (queryVector == null || queryVector.isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        // 2. 从 MySQL 读取候选知识文档。这里不取全部，只取启用、已向量化、同分类的近 200 条。
+        // 学习项目数据量小，可以直接 Java 内存算；生产大规模场景应交给向量数据库做 ANN 检索。
+        List<AgentKnowledgeDoc> candidates = query()
+                .eq("status", 1)
+                .eq(!isBlank(category), "category", category)
+                .isNotNull("vector_id")
+                .orderByDesc("update_time")
+                .last("LIMIT 200")
+                .list();
+
+        List<ScoredKnowledgeDoc> scoredDocs = new ArrayList<>();
+        for (AgentKnowledgeDoc doc : candidates) {
+            if (isBlank(doc.getVectorId())) {
+                continue;
+            }
+
+            // 3. 根据 MySQL 里的 vectorId 到 Redis 读取 1024 维文档向量。
+            List<Float> docVector = embeddingService.loadVector(doc.getVectorId());
+
+            // 4. 用余弦相似度计算“用户问题”和“知识片段”的语义相关度。
+            double score = embeddingService.cosineSimilarity(queryVector, docVector);
+            if (score <= 0D) {
+                continue;
+            }
+            scoredDocs.add(new ScoredKnowledgeDoc(doc, score));
+        }
+
+        // 5. 按相似度从高到低排序，分数最高的知识片段最先进入 Prompt。
+        scoredDocs.sort(Comparator.comparingDouble(ScoredKnowledgeDoc::getScore).reversed());
+
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (int i = 0; i < Math.min(safeLimit, scoredDocs.size()); i++) {
+            ScoredKnowledgeDoc scoredDoc = scoredDocs.get(i);
+            Map<String, Object> row = toDocRow(scoredDoc.getDoc());
+
+            // retrievalMode 和 similarityScore 会返回给前端调试面板，便于观察 RAG 是否真的命中。
+            row.put("retrievalMode", "semantic_vector");
+            row.put("similarityScore", roundScore(scoredDoc.getScore()));
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    /**
+     * 关键词兜底召回。
+     *
+     * <p>当 API Key 未配置、Embedding 服务异常、Redis 中还没有向量时，RAG 不能阻断 Agent 主流程。
+     * 所以这里保留原来的 MySQL like 检索，保证学习项目在没有向量库时也能运行。</p>
+     */
+    private List<Map<String, Object>> retrieveByKeyword(String category, String userMessage, String intent, int safeLimit) {
+        // 关键词由简单规则提取，例如“秒杀/周末” -> “秒杀”，“评价/口碑” -> “评价”。
         String keyword = resolveKeyword(userMessage, intent);
         List<AgentKnowledgeDoc> docs = query()
                 .eq("status", 1)
@@ -257,8 +340,9 @@ public class MerchantAgentKnowledgeDocServiceImpl
                 .last("LIMIT " + safeLimit)
                 .list();
 
-        // 如果关键词没有命中，退一步按分类取最近知识，避免 Agent 完全没有运营规则可参考。
         if (docs.isEmpty() && !isBlank(category)) {
+            // 如果关键词没命中，但当前意图能映射到分类，就退一步取该分类最近更新的知识。
+            // 这样至少能给 Agent 一些行业规则背景，而不是完全没有 RAG 内容。
             docs = query()
                     .eq("status", 1)
                     .eq("category", category)
@@ -266,7 +350,12 @@ public class MerchantAgentKnowledgeDocServiceImpl
                     .last("LIMIT " + safeLimit)
                     .list();
         }
-        return toDocRows(docs);
+
+        List<Map<String, Object>> rows = toDocRows(docs);
+        for (Map<String, Object> row : rows) {
+            row.put("retrievalMode", "mysql_keyword_fallback");
+        }
+        return rows;
     }
 
     private Result validateCreateRequest(AgentKnowledgeDocRequest request) {
@@ -469,5 +558,33 @@ public class MerchantAgentKnowledgeDocServiceImpl
 
     private String trimToNull(String value) {
         return isBlank(value) ? null : value.trim();
+    }
+
+    private double roundScore(double score) {
+        // 前端只需要观察相似度大致水平，保留 4 位小数即可。
+        return Math.round(score * 10000D) / 10000D;
+    }
+
+    /**
+     * 内部排序对象：把文档和相似度分数绑在一起。
+     *
+     * <p>这里不用 DTO 暴露到外部，是因为它只服务于 retrieveByVector 的排序过程。</p>
+     */
+    private static class ScoredKnowledgeDoc {
+        private final AgentKnowledgeDoc doc;
+        private final double score;
+
+        private ScoredKnowledgeDoc(AgentKnowledgeDoc doc, double score) {
+            this.doc = doc;
+            this.score = score;
+        }
+
+        private AgentKnowledgeDoc getDoc() {
+            return doc;
+        }
+
+        private double getScore() {
+            return score;
+        }
     }
 }

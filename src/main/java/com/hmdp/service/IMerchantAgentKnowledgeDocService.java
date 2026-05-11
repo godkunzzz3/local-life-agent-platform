@@ -12,8 +12,8 @@ import java.util.Map;
 /**
  * 商家运营 Agent 知识库文档服务。
  *
- * <p>第一版只做 MySQL 文档管理和关键词检索。等这条链路跑通后，再把启用状态的文档
- * 切片、向量化，并接入真正的 RAG 检索。</p>
+ * <p>负责知识文档的维护、文件导入、向量化和 Agent 内部召回。
+ * 当前实现会优先走语义向量检索，异常时降级为 MySQL 关键词检索。</p>
  */
 public interface IMerchantAgentKnowledgeDocService extends IService<AgentKnowledgeDoc> {
 
@@ -38,7 +38,7 @@ public interface IMerchantAgentKnowledgeDocService extends IService<AgentKnowled
     Result queryKnowledgeDocs(String category, String keyword, Integer status);
 
     /**
-     * RAG 第一版检索入口：用分类 + 关键词召回知识文档。
+     * 知识库查询入口：用于管理端按分类和关键词查看文档。
      */
     Result searchKnowledgeDocs(String category, String keyword, Integer limit);
 
@@ -64,7 +64,7 @@ public interface IMerchantAgentKnowledgeDocService extends IService<AgentKnowled
      * Agent 内部 RAG 检索入口。
      *
      * <p>返回 Map 是为了方便直接放进 PromptContext 和前端调试面板。后续接向量库时，
-     * 这个方法可以改成融合关键词、向量相似度和重排序分数。</p>
+     * 这个方法已经融合了向量相似度和关键词兜底，后续可以继续扩展重排序。</p>
      */
     List<Map<String, Object>> retrieveForAgent(String intent, String userMessage, Integer limit);
 }

@@ -116,7 +116,7 @@ public class MerchantAgentToolCallingService {
         List<Map<String, Object>> toolCalls = new ArrayList<>();
         List<ChatMessage> messages = new ArrayList<>();
         List<Map<String, Object>> ragKnowledge = retrieveToolCallingRagKnowledge(intent, userMessage);
-        String ragRetrievalMode = ragKnowledge.isEmpty() ? "skipped_or_no_hit" : "mysql_keyword";
+        String ragRetrievalMode = resolveRagRetrievalMode(ragKnowledge);
         Map<String, Object> promptContext = buildPromptContext(shop, userMessage, intent, ragRetrievalMode, ragKnowledge);
 
         messages.add(SystemMessage.from(buildSystemPrompt(shop, userMessage, ragKnowledge)));
@@ -365,6 +365,14 @@ public class MerchantAgentToolCallingService {
             // 生产环境可在这里补充告警日志，学习阶段先降级为空知识。
             return new ArrayList<>();
         }
+    }
+
+    private String resolveRagRetrievalMode(List<Map<String, Object>> ragKnowledge) {
+        if (ragKnowledge == null || ragKnowledge.isEmpty()) {
+            return "skipped_or_no_hit";
+        }
+        Object mode = ragKnowledge.get(0).get("retrievalMode");
+        return mode == null ? "unknown" : String.valueOf(mode);
     }
 
     private String resolveToolCallingIntent(String userMessage) {
