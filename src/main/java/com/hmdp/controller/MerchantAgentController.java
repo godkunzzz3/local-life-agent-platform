@@ -1,6 +1,7 @@
 package com.hmdp.controller;
 
 import com.hmdp.dto.AgentKnowledgeDocRequest;
+import com.hmdp.dto.AgentKnowledgeRetrieveRequest;
 import com.hmdp.dto.MerchantOperationReportRequest;
 import com.hmdp.dto.MerchantCampaignDraftRequest;
 import com.hmdp.dto.MerchantAgentChatRequest;
@@ -124,6 +125,21 @@ public class MerchantAgentController {
     public Result vectorizeKnowledgeDocs(@RequestParam(value = "category", required = false) String category,
                                          @RequestParam(value = "limit", required = false) Integer limit) {
         return merchantAgentKnowledgeDocService.vectorizeKnowledgeDocs(category, limit);
+    }
+
+    /**
+     * 调试 RAG 召回效果。
+     *
+     * <p>这个接口不会调用大模型，也不会生成商家回复。它只验证：
+     * 当前问题会召回哪些知识、走 semantic_vector 还是关键词兜底、相似度分数是多少。</p>
+     */
+    @PostMapping("/knowledge-docs/retrieve-debug")
+    public Result debugRetrieveKnowledge(@RequestBody AgentKnowledgeRetrieveRequest request) {
+        if (request == null) {
+            return Result.fail("请输入要调试的商家问题");
+        }
+        return merchantAgentKnowledgeDocService.debugRetrieveForAgent(
+                request.getIntent(), request.getMessage(), request.getLimit());
     }
 
     /**

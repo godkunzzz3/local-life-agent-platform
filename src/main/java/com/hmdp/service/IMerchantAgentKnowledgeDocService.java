@@ -61,6 +61,14 @@ public interface IMerchantAgentKnowledgeDocService extends IService<AgentKnowled
     Result vectorizeKnowledgeDocs(String category, Integer limit);
 
     /**
+     * RAG 召回调试接口。
+     *
+     * <p>用于学习和排查：直接输入商家问题，返回召回知识、检索模式和相似度分数。
+     * 它不调用大模型，也不生成最终回复。</p>
+     */
+    Result debugRetrieveForAgent(String intent, String userMessage, Integer limit);
+
+    /**
      * Agent 内部 RAG 检索入口。
      *
      * <p>返回 Map 是为了方便直接放进 PromptContext 和前端调试面板。后续接向量库时，

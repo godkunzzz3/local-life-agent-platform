@@ -243,6 +243,30 @@ public class MerchantAgentKnowledgeDocServiceImpl
     }
 
     @Override
+    public Result debugRetrieveForAgent(String intent, String userMessage, Integer limit) {
+        if (isBlank(userMessage)) {
+            return Result.fail("请输入要调试的商家问题");
+        }
+        int safeLimit = limit == null || limit <= 0 ? 3 : Math.min(limit, 8);
+        String safeIntent = isBlank(intent) ? "operation_chat" : intent.trim();
+
+        // 调用正式 Agent 使用的同一个召回入口，保证调试结果和线上对话链路一致。
+        List<Map<String, Object>> hits = retrieveForAgent(safeIntent, userMessage.trim(), safeLimit);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("message", userMessage.trim());
+        result.put("intent", safeIntent);
+        result.put("limit", safeLimit);
+        result.put("retrievalMode", resolveRetrievalMode(hits));
+        result.put("hitCount", hits.size());
+        result.put("documents", hits);
+        result.put("explain", hits.isEmpty()
+                ? "没有召回知识。请确认知识文档已启用并完成向量化，或补充更相关的运营知识。"
+                : "已使用与 Agent 对话相同的 RAG 召回链路返回 TopK 知识。");
+        return Result.ok(result);
+    }
+
+    @Override
     public List<Map<String, Object>> retrieveForAgent(String intent, String userMessage, Integer limit) {
         // Agent 内部默认只取 Top3，避免把太多知识片段塞进 Prompt 导致成本和噪音上升。
         int safeLimit = limit == null || limit <= 0 ? 3 : Math.min(limit, 8);
@@ -563,6 +587,14 @@ public class MerchantAgentKnowledgeDocServiceImpl
     private double roundScore(double score) {
         // 前端只需要观察相似度大致水平，保留 4 位小数即可。
         return Math.round(score * 10000D) / 10000D;
+    }
+
+    private String resolveRetrievalMode(List<Map<String, Object>> hits) {
+        if (hits == null || hits.isEmpty()) {
+            return "skipped_or_no_hit";
+        }
+        Object mode = hits.get(0).get("retrievalMode");
+        return mode == null ? "unknown" : String.valueOf(mode);
     }
 
     /**
