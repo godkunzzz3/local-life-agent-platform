@@ -423,8 +423,15 @@ public class MerchantAgentToolCallingService {
         for (Map<String, Object> doc : ragKnowledge) {
             builder.append(index++)
                     .append(". ")
-                    .append(String.valueOf(doc.getOrDefault("title", "未命名知识")))
-                    .append("：")
+                    .append(String.valueOf(doc.getOrDefault("title", "未命名知识")));
+            Object score = doc.get("similarityScore");
+            if (score != null) {
+                builder.append("，相似度=").append(score);
+            }
+            builder.append("，检索模式=")
+                    .append(String.valueOf(doc.getOrDefault("retrievalMode", "unknown")))
+                    .append("\n")
+                    .append("   规则摘要：")
                     .append(shortText(String.valueOf(doc.getOrDefault("content", "")), 260))
                     .append("\n");
         }

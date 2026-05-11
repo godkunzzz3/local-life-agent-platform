@@ -12,6 +12,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import javax.annotation.Resource;
+import java.util.List;
+import java.util.Map;
 
 /**
  * LangChain4j 版商家运营模型客户端。
@@ -120,8 +122,29 @@ public class LangChain4jMerchantAgentModelClient implements MerchantAgentModelCl
                 || request.getPromptContext().getRagKnowledge().isEmpty()) {
             return "暂无召回知识，请只基于工具数据回答，不要编造平台规则。";
         }
-        return "检索方式：" + request.getPromptContext().getRagRetrievalMode()
-                + "\n知识文档：" + toJson(request.getPromptContext().getRagKnowledge());
+        StringBuilder builder = new StringBuilder();
+        builder.append("检索方式：").append(request.getPromptContext().getRagRetrievalMode()).append("\n");
+        builder.append("使用要求：如果引用下列知识，请在回复中说明“依据知识库规则”。\n");
+        appendKnowledgeRows(builder, request.getPromptContext().getRagKnowledge());
+        return builder.toString().trim();
+    }
+
+    private void appendKnowledgeRows(StringBuilder builder, List<Map<String, Object>> knowledgeRows) {
+        int index = 1;
+        for (Map<String, Object> doc : knowledgeRows) {
+            builder.append(index++).append(". ")
+                    .append(String.valueOf(doc.getOrDefault("title", "未命名知识")));
+            Object score = doc.get("similarityScore");
+            if (score != null) {
+                builder.append("，相似度=").append(score);
+            }
+            builder.append("，检索模式=")
+                    .append(String.valueOf(doc.getOrDefault("retrievalMode", "unknown")))
+                    .append("\n")
+                    .append("   规则摘要：")
+                    .append(shortText(String.valueOf(doc.getOrDefault("content", "")), 260))
+                    .append("\n");
+        }
     }
 
     private String buildConstraints(AgentModelRequestDTO request) {
@@ -141,6 +164,17 @@ public class LangChain4jMerchantAgentModelClient implements MerchantAgentModelCl
         } catch (JsonProcessingException e) {
             return String.valueOf(value);
         }
+    }
+
+    private String shortText(String text, int maxLength) {
+        if (text == null) {
+            return "";
+        }
+        String value = text.replace("\r", "").replace("\n", " ").trim();
+        if (value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, maxLength) + "...";
     }
 
     private boolean isBlank(String value) {
