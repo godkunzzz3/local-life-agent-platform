@@ -36,6 +36,13 @@ public class MerchantAgentKnowledgeDocServiceImpl
 
     private static final long MAX_UPLOAD_SIZE = 256 * 1024;
     private static final int MAX_CHUNK_LENGTH = 500;
+    /**
+     * 语义召回最低可信相似度。
+     *
+     * <p>RAG 不是“有结果就塞进 Prompt”。相似度过低的知识片段很可能只是噪音，
+     * 会干扰模型判断。学习阶段先用 0.55 做保守阈值，后续可结合评测集继续调参。</p>
+     */
+    private static final double VECTOR_MIN_SIMILARITY = 0.55D;
 
     @Resource
     private RedisIdWorker redisIdWorker;
@@ -261,10 +268,12 @@ public class MerchantAgentKnowledgeDocServiceImpl
         result.put("limit", safeLimit);
         result.put("retrievalMode", resolveRetrievalMode(hits));
         result.put("hitCount", hits.size());
+        result.put("vectorMinSimilarity", VECTOR_MIN_SIMILARITY);
+        result.put("qualityGate", hits.isEmpty() ? "no_reliable_hit" : "passed");
         result.put("documents", hits);
         result.put("explain", hits.isEmpty()
-                ? "没有召回知识。请确认知识文档已启用并完成向量化，或补充更相关的运营知识。"
-                : "已使用与 Agent 对话相同的 RAG 召回链路返回 TopK 知识。");
+                ? "没有可靠知识进入 Prompt。可能原因：知识未向量化、问题与业务无关，或语义相似度低于阈值。"
+                : "已使用与 Agent 对话相同的 RAG 召回链路返回 TopK 可靠知识。");
         return Result.ok(result);
     }
 
@@ -296,7 +305,8 @@ public class MerchantAgentKnowledgeDocServiceImpl
         result.put("passRate", rows.isEmpty() ? "0.00%" : String.format("%.2f%%", passCount * 100.0 / rows.size()));
         result.put("limit", safeLimit);
         result.put("items", rows);
-        result.put("explain", "评测口径：TopK 召回文档中只要命中任意一个期望分类，即视为通过。");
+        result.put("vectorMinSimilarity", VECTOR_MIN_SIMILARITY);
+        result.put("explain", "评测口径：通过质量闸门后的 TopK 文档中只要命中任意一个期望分类，即视为通过。");
         return Result.ok(result);
     }
 
@@ -356,7 +366,7 @@ public class MerchantAgentKnowledgeDocServiceImpl
 
             // 4. 用余弦相似度计算“用户问题”和“知识片段”的语义相关度。
             double score = embeddingService.cosineSimilarity(queryVector, docVector);
-            if (score <= 0D) {
+            if (score < VECTOR_MIN_SIMILARITY) {
                 continue;
             }
             scoredDocs.add(new ScoredKnowledgeDoc(doc, score));
@@ -373,6 +383,8 @@ public class MerchantAgentKnowledgeDocServiceImpl
             // retrievalMode 和 similarityScore 会返回给前端调试面板，便于观察 RAG 是否真的命中。
             row.put("retrievalMode", "semantic_vector");
             row.put("similarityScore", roundScore(scoredDoc.getScore()));
+            row.put("qualityStatus", "passed");
+            row.put("minSimilarity", VECTOR_MIN_SIMILARITY);
             row.put("candidateCategories", categories);
             rows.add(row);
         }
@@ -388,6 +400,11 @@ public class MerchantAgentKnowledgeDocServiceImpl
     private List<Map<String, Object>> retrieveByKeyword(List<String> categories, String userMessage, String intent, int safeLimit) {
         // 关键词由简单规则提取，例如“秒杀/周末” -> “秒杀”，“评价/口碑” -> “评价”。
         String keyword = resolveKeyword(userMessage, intent);
+        if (isBlank(keyword) && !isStrongBusinessIntent(intent)) {
+            // 兜底检索也要有边界：业务相关性不足时不强行按分类取最近文档，
+            // 否则“我帅吗”这类问题也可能被塞入优惠券规则，造成 Prompt 噪音。
+            return new ArrayList<>();
+        }
         List<AgentKnowledgeDoc> docs = query()
                 .eq("status", 1)
                 .in(hasCategories(categories), "category", categories)
@@ -413,6 +430,7 @@ public class MerchantAgentKnowledgeDocServiceImpl
         List<Map<String, Object>> rows = toDocRows(docs);
         for (Map<String, Object> row : rows) {
             row.put("retrievalMode", "mysql_keyword_fallback");
+            row.put("qualityStatus", isBlank(keyword) ? "category_fallback" : "keyword_fallback");
             row.put("candidateCategories", categories);
         }
         return rows;
@@ -631,6 +649,12 @@ public class MerchantAgentKnowledgeDocServiceImpl
         if (containsAny(userMessage, "成本", "利润", "收入", "营收")) {
             return "成本";
         }
+        if (containsAny(userMessage, "订单", "经营", "成交", "支付", "核销", "转化")) {
+            return "订单";
+        }
+        if (containsAny(userMessage, "人工确认", "风险", "退款", "删除", "群发", "库存")) {
+            return "风险";
+        }
         if ("voucher_plan".equals(intent)) {
             return "活动";
         }
@@ -638,6 +662,14 @@ public class MerchantAgentKnowledgeDocServiceImpl
             return "评价";
         }
         return "";
+    }
+
+    private boolean isStrongBusinessIntent(String intent) {
+        // 这些意图是由 Agent 前置意图识别得到的业务场景，即使用户没写出非常明确的关键词，
+        // 也允许使用分类最近知识做兜底，保证订单分析、活动方案这类核心场景有知识背景。
+        return "voucher_plan".equals(intent)
+                || "review_analysis".equals(intent)
+                || "order_analysis".equals(intent);
     }
 
     private void addCategory(List<String> categories, String category) {
