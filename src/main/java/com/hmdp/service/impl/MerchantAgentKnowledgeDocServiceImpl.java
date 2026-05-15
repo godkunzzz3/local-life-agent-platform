@@ -289,24 +289,37 @@ public class MerchantAgentKnowledgeDocServiceImpl
                 : request.getCases();
 
         List<Map<String, Object>> rows = new ArrayList<>();
-        int passCount = 0;
+        int topKPassCount = 0;
+        int top1PassCount = 0;
+        int noHitCount = 0;
         for (AgentKnowledgeEvaluateRequest.CaseItem item : cases) {
             Map<String, Object> row = evaluateOneCase(item, safeLimit);
             rows.add(row);
-            if (Boolean.TRUE.equals(row.get("passed"))) {
-                passCount++;
+            if (Boolean.TRUE.equals(row.get("topKPassed"))) {
+                topKPassCount++;
+            }
+            if (Boolean.TRUE.equals(row.get("top1Passed"))) {
+                top1PassCount++;
+            }
+            if (Boolean.TRUE.equals(row.get("noReliableHit"))) {
+                noHitCount++;
             }
         }
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("total", rows.size());
-        result.put("passCount", passCount);
-        result.put("failCount", rows.size() - passCount);
-        result.put("passRate", rows.isEmpty() ? "0.00%" : String.format("%.2f%%", passCount * 100.0 / rows.size()));
+        result.put("passCount", topKPassCount);
+        result.put("failCount", rows.size() - topKPassCount);
+        result.put("passRate", formatRate(topKPassCount, rows.size()));
+        result.put("top1PassCount", top1PassCount);
+        result.put("topKPassCount", topKPassCount);
+        result.put("top1PassRate", formatRate(top1PassCount, rows.size()));
+        result.put("topKPassRate", formatRate(topKPassCount, rows.size()));
+        result.put("noReliableHitCount", noHitCount);
         result.put("limit", safeLimit);
         result.put("items", rows);
         result.put("vectorMinSimilarity", VECTOR_MIN_SIMILARITY);
-        result.put("explain", "评测口径：通过质量闸门后的 TopK 文档中只要命中任意一个期望分类，即视为通过。");
+        result.put("explain", "评测口径：Top1 命中衡量第一条是否准确；TopK 命中衡量通过质量闸门后的候选结果是否覆盖预期分类。");
         return Result.ok(result);
     }
 
@@ -733,7 +746,10 @@ public class MerchantAgentKnowledgeDocServiceImpl
             topDocs.add(doc);
         }
 
-        boolean passed = hasIntersection(expectedCategories, hitCategories);
+        String top1Category = topDocs.isEmpty() ? "" : String.valueOf(topDocs.get(0).getOrDefault("category", ""));
+        boolean top1Passed = hasIntersection(expectedCategories, Arrays.asList(top1Category));
+        boolean topKPassed = hasIntersection(expectedCategories, hitCategories);
+        boolean noReliableHit = hits.isEmpty();
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("message", message);
         row.put("intent", intent);
@@ -742,9 +758,29 @@ public class MerchantAgentKnowledgeDocServiceImpl
         row.put("retrievalMode", resolveRetrievalMode(hits));
         row.put("top1", topDocs.isEmpty() ? null : topDocs.get(0));
         row.put("topK", topDocs);
-        row.put("passed", passed);
-        row.put("reason", passed ? "TopK 命中期望分类" : "TopK 未命中期望分类，需要补充知识或调整召回策略");
+        row.put("passed", topKPassed);
+        row.put("top1Passed", top1Passed);
+        row.put("topKPassed", topKPassed);
+        row.put("noReliableHit", noReliableHit);
+        row.put("reason", resolveEvaluationReason(top1Passed, topKPassed, noReliableHit));
         return row;
+    }
+
+    private String formatRate(int count, int total) {
+        return total <= 0 ? "0.00%" : String.format("%.2f%%", count * 100.0 / total);
+    }
+
+    private String resolveEvaluationReason(boolean top1Passed, boolean topKPassed, boolean noReliableHit) {
+        if (top1Passed) {
+            return "Top1 命中期望分类，召回排序质量较好";
+        }
+        if (topKPassed) {
+            return "TopK 命中但 Top1 未命中，需要优化排序或补充更高质量知识";
+        }
+        if (noReliableHit) {
+            return "没有可靠知识通过质量闸门，可能需要向量化知识或降低阈值";
+        }
+        return "TopK 未命中期望分类，需要补充知识或调整召回策略";
     }
 
     private List<AgentKnowledgeEvaluateRequest.CaseItem> defaultEvaluationCases() {
