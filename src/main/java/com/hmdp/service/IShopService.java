@@ -17,5 +17,11 @@ public interface IShopService extends IService<Shop> {
     Result queryByID(Long id);
     Result update(Shop shop);
 
-    Result queryShopByType(Integer typeId, Integer current, Double x, Double y);
+    /**
+     * 按分类查询店铺列表。
+     *
+     * <p>带经纬度时优先走 Redis GEO 附近商铺查询；不带经纬度时走普通分页。
+     * sortBy 用于支持前端按人气、评分等字段排序。</p>
+     */
+    Result queryShopByType(Integer typeId, Integer current, Double x, Double y, String sortBy);
 }

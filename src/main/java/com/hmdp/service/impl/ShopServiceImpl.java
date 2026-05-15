@@ -2,6 +2,7 @@ package com.hmdp.service.impl;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import cn.hutool.core.util.StrUtil;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.Shop;
 import com.hmdp.mapper.ShopMapper;
@@ -88,10 +89,19 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     }
 
     @Override
-    public Result queryShopByType(Integer typeId, Integer current, Double x, Double y) {
+    public Result queryShopByType(Integer typeId, Integer current, Double x, Double y, String sortBy) {
         if (x == null || y == null) {
             Page<Shop> page = query()
                     .eq("type_id", typeId)
+                    .orderByDesc(isSupportedSort(sortBy), sortBy)
+                    .page(new Page<>(current, SystemConstants.DEFAULT_PAGE_SIZE));
+            return Result.ok(page.getRecords());
+        }
+
+        if (isSupportedSort(sortBy)) {
+            Page<Shop> page = query()
+                    .eq("type_id", typeId)
+                    .orderByDesc(sortBy)
                     .page(new Page<>(current, SystemConstants.DEFAULT_PAGE_SIZE));
             return Result.ok(page.getRecords());
         }
@@ -128,5 +138,10 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
             }
         }
         return Result.ok(shops);
+    }
+
+    private boolean isSupportedSort(String sortBy) {
+        // 只允许白名单字段参与排序，避免把前端参数直接拼进 SQL 造成风险。
+        return StrUtil.equalsAny(sortBy, "comments", "score", "avg_price", "sold");
     }
 }

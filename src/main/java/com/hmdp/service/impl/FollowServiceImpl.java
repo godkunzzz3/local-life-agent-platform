@@ -53,8 +53,17 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
     @Override
     public Result follow(Long followUserId, Boolean isFollow) {
         Long userId = UserHolder.getUser().getId();
+        if (userId.equals(followUserId)) {
+            return Result.fail("不能关注自己");
+        }
         String key = FOLLOW_KEY + userId;
         if (Boolean.TRUE.equals(isFollow)) {
+            Integer count = query().eq("user_id", userId).eq("follow_user_id", followUserId).count();
+            if (count != null && count > 0) {
+                // 接口幂等：用户已经关注时再次点击关注，只补齐 Redis 缓存，不重复插入数据库。
+                stringRedisTemplate.opsForSet().add(key, followUserId.toString());
+                return Result.ok();
+            }
             Follow follow = new Follow();
             follow.setUserId(userId);
             follow.setFollowUserId(followUserId);

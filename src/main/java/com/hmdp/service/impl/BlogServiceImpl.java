@@ -18,6 +18,7 @@ import com.hmdp.utils.UserHolder;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 import javax.annotation.Resource;
 import java.util.ArrayList;
@@ -49,8 +50,22 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
 
     @Override
     public Result saveBlog(Blog blog) {
+        if (blog.getShopId() == null) {
+            return Result.fail("请选择关联商户");
+        }
+        if (!StringUtils.hasText(blog.getTitle())) {
+            return Result.fail("笔记标题不能为空");
+        }
+        if (!StringUtils.hasText(blog.getContent())) {
+            return Result.fail("笔记内容不能为空");
+        }
+        if (!StringUtils.hasText(blog.getImages())) {
+            return Result.fail("请至少上传一张探店图片");
+        }
         Long userId = UserHolder.getUser().getId();
         blog.setUserId(userId);
+        blog.setLiked(0);
+        blog.setComments(0);
         save(blog);
 
         // 推模式 Feed：作者发布笔记后，把 blogId 推入所有粉丝的收件箱 ZSet。
@@ -75,6 +90,10 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
 
     @Override
     public Result likeBlog(Long id) {
+        Blog blog = getById(id);
+        if (blog == null) {
+            return Result.fail("笔记不存在");
+        }
         Long userId = UserHolder.getUser().getId();
         String key = BLOG_LIKED_KEY + id;
         Double score = stringRedisTemplate.opsForZSet().score(key, userId.toString());
@@ -132,7 +151,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         Set<ZSetOperations.TypedTuple<String>> typedTuples = stringRedisTemplate.opsForZSet()
                 .reverseRangeByScoreWithScores(key, 0, max, offset, SystemConstants.MAX_PAGE_SIZE);
         if (typedTuples == null || typedTuples.isEmpty()) {
-            return Result.ok(Collections.emptyList());
+            return Result.ok(emptyScrollResult());
         }
 
         List<Long> ids = new ArrayList<>(typedTuples.size());
@@ -161,6 +180,16 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         result.setMinTime(minTime);
         result.setOffset(os);
         return Result.ok(result);
+    }
+
+    private ScrollResult emptyScrollResult() {
+        // Feed 流接口固定返回 ScrollResult。即使没有新笔记，也返回空 list，
+        // 避免前端按 {list, minTime, offset} 解构时拿到普通数组导致报错。
+        ScrollResult result = new ScrollResult();
+        result.setList(Collections.emptyList());
+        result.setMinTime(0L);
+        result.setOffset(0);
+        return result;
     }
 
     @Override
