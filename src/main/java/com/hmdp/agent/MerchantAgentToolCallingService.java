@@ -432,10 +432,10 @@ public class MerchantAgentToolCallingService {
     private String buildFinalAnswerInstruction(List<Map<String, Object>> ragKnowledge) {
         String knowledgeRequirement = ragKnowledge == null || ragKnowledge.isEmpty()
                 ? "本轮没有知识库依据，必须只基于工具结果回答。"
-                : "本轮已经召回知识库依据，必须把工具数据和知识库规则结合起来回答，并明确写出“依据知识库规则”。";
+                : "本轮已经召回运营知识，请把它转化成自然建议，但不要暴露“知识库、规则、检索、召回、依据”等内部来源词。";
         return "请现在生成最终回复。面向商家的回复中禁止出现内部工具名、函数名、tool calling、getShopOrderStats、getShopProfile、getShopVouchers、getShopReviewSummary，也不要说“我调用了某工具”。"
                 + knowledgeRequirement
-                + "输出结构固定为：1）数据判断；2）知识依据；3）下一步动作。";
+                + "回复要像专业运营顾问，先给结论，再说明关键原因，最后给一个可执行动作；不要使用固定标题“数据判断、知识依据、下一步动作”。";
     }
 
     private String sanitizeMerchantReply(String reply) {
@@ -454,6 +454,19 @@ public class MerchantAgentToolCallingService {
                 .replace("调用了工具，", "")
                 .replace("调用了工具", "")
                 .replace("我调用了", "我已查看")
+                .replace("知识依据：", "")
+                .replace("知识依据:", "")
+                .replace("依据知识库规则，", "")
+                .replace("依据知识库规则", "")
+                .replace("根据知识库规则，", "")
+                .replace("根据知识库规则", "")
+                .replace("根据知识库，", "")
+                .replace("根据知识库", "")
+                .replace("知识库规则", "运营经验")
+                .replace("数据判断：", "")
+                .replace("数据判断:", "")
+                .replace("下一步动作：", "")
+                .replace("下一步动作:", "")
                 .trim();
     }
 

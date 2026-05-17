@@ -7,6 +7,8 @@ import com.hmdp.dto.AgentKnowledgeEvaluateRequest;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.AgentKnowledgeDoc;
 import com.hmdp.mapper.AgentKnowledgeDocMapper;
+import com.hmdp.service.IMerchantAgentKnowledgeEvalCaseService;
+import com.hmdp.service.IMerchantAgentKnowledgeEvalRunService;
 import com.hmdp.service.IMerchantAgentKnowledgeDocService;
 import com.hmdp.utils.RedisIdWorker;
 import org.springframework.stereotype.Service;
@@ -37,6 +39,13 @@ public class MerchantAgentKnowledgeDocServiceImpl
     private static final long MAX_UPLOAD_SIZE = 256 * 1024;
     private static final int MAX_CHUNK_LENGTH = 500;
     /**
+     * 单次 RAG 评测最多允许多少条用例。
+     *
+     * <p>评测接口会对每条用例执行一次召回，如果不限制数量，前端误传大数组时会造成 Redis
+     * 向量计算和数据库查询压力。学习阶段 20 条足够做小型回归测试。</p>
+     */
+    private static final int MAX_EVALUATION_CASES = 20;
+    /**
      * 语义召回最低可信相似度。
      *
      * <p>RAG 不是“有结果就塞进 Prompt”。相似度过低的知识片段很可能只是噪音，
@@ -48,6 +57,10 @@ public class MerchantAgentKnowledgeDocServiceImpl
     private RedisIdWorker redisIdWorker;
     @Resource
     private MerchantAgentEmbeddingService embeddingService;
+    @Resource
+    private IMerchantAgentKnowledgeEvalCaseService evalCaseService;
+    @Resource
+    private IMerchantAgentKnowledgeEvalRunService evalRunService;
 
     @Override
     public Result createKnowledgeDoc(AgentKnowledgeDocRequest request) {
@@ -282,11 +295,21 @@ public class MerchantAgentKnowledgeDocServiceImpl
         int safeLimit = request == null || request.getLimit() == null || request.getLimit() <= 0
                 ? 3
                 : Math.min(request.getLimit(), 8);
-        List<AgentKnowledgeEvaluateRequest.CaseItem> cases = request == null
-                || request.getCases() == null
-                || request.getCases().isEmpty()
-                ? defaultEvaluationCases()
-                : request.getCases();
+        boolean customCaseRequest = request != null && request.getCases() != null && !request.getCases().isEmpty();
+        List<AgentKnowledgeEvaluateRequest.CaseItem> cases = customCaseRequest
+                ? sanitizeEvaluationCases(request.getCases())
+                : evalCaseService.listEnabledCaseItems();
+        String caseSource = customCaseRequest ? "custom" : "default";
+        if (!customCaseRequest && cases.isEmpty()) {
+            cases = defaultEvaluationCases();
+        } else if (!customCaseRequest) {
+            caseSource = "persisted";
+        }
+        // 如果前端传了自定义用例，但全部为空或不合法，回退到默认用例，保证评测接口仍然可用。
+        if (cases.isEmpty()) {
+            cases = defaultEvaluationCases();
+            caseSource = "default_fallback";
+        }
 
         List<Map<String, Object>> rows = new ArrayList<>();
         int topKPassCount = 0;
@@ -317,9 +340,17 @@ public class MerchantAgentKnowledgeDocServiceImpl
         result.put("topKPassRate", formatRate(topKPassCount, rows.size()));
         result.put("noReliableHitCount", noHitCount);
         result.put("limit", safeLimit);
+        result.put("caseSource", caseSource);
+        result.put("maxCaseCount", MAX_EVALUATION_CASES);
         result.put("items", rows);
         result.put("vectorMinSimilarity", VECTOR_MIN_SIMILARITY);
         result.put("explain", "评测口径：Top1 命中衡量第一条是否准确；TopK 命中衡量通过质量闸门后的候选结果是否覆盖预期分类。");
+
+        // 评测历史是旁路观测能力：保存成功就把 runId 返回给前端，保存失败也不影响本次评测结果。
+        Long runId = evalRunService.recordRun(result);
+        if (runId != null) {
+            result.put("runId", String.valueOf(runId));
+        }
         return Result.ok(result);
     }
 
@@ -781,6 +812,41 @@ public class MerchantAgentKnowledgeDocServiceImpl
             return "没有可靠知识通过质量闸门，可能需要向量化知识或降低阈值";
         }
         return "TopK 未命中期望分类，需要补充知识或调整召回策略";
+    }
+
+    private List<AgentKnowledgeEvaluateRequest.CaseItem> sanitizeEvaluationCases(List<AgentKnowledgeEvaluateRequest.CaseItem> rawCases) {
+        List<AgentKnowledgeEvaluateRequest.CaseItem> cases = new ArrayList<>();
+        if (rawCases == null) {
+            return cases;
+        }
+        for (AgentKnowledgeEvaluateRequest.CaseItem rawCase : rawCases) {
+            if (cases.size() >= MAX_EVALUATION_CASES) {
+                break;
+            }
+            if (rawCase == null || isBlank(rawCase.getMessage())) {
+                continue;
+            }
+
+            List<String> expectedCategories = new ArrayList<>();
+            if (rawCase.getExpectedCategories() != null) {
+                for (String category : rawCase.getExpectedCategories()) {
+                    if (!isBlank(category)) {
+                        expectedCategories.add(category.trim());
+                    }
+                }
+            }
+            // 没有期望分类的用例无法判断是否命中，直接跳过，避免评测指标失真。
+            if (expectedCategories.isEmpty()) {
+                continue;
+            }
+
+            AgentKnowledgeEvaluateRequest.CaseItem item = new AgentKnowledgeEvaluateRequest.CaseItem();
+            item.setMessage(rawCase.getMessage().trim());
+            item.setIntent(isBlank(rawCase.getIntent()) ? "operation_chat" : rawCase.getIntent().trim());
+            item.setExpectedCategories(expectedCategories);
+            cases.add(item);
+        }
+        return cases;
     }
 
     private List<AgentKnowledgeEvaluateRequest.CaseItem> defaultEvaluationCases() {

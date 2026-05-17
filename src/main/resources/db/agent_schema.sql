@@ -135,4 +135,42 @@ CREATE TABLE IF NOT EXISTS `tb_agent_knowledge_doc` (
   INDEX `idx_status_time`(`status`, `update_time`) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '商家运营Agent知识库文档表' ROW_FORMAT = Dynamic;
 
+-- ----------------------------
+-- Table structure for tb_agent_knowledge_eval_case
+-- ----------------------------
+CREATE TABLE IF NOT EXISTS `tb_agent_knowledge_eval_case` (
+  `id` bigint(20) UNSIGNED NOT NULL COMMENT '主键，建议使用 RedisIdWorker 生成',
+  `message` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '测试问题',
+  `intent` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'operation_chat' COMMENT '业务意图：voucher_plan / order_analysis / review_analysis / operation_chat',
+  `expected_categories` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '期望命中的知识分类JSON数组',
+  `sort_order` int(11) UNSIGNED NOT NULL DEFAULT 1 COMMENT '排序号',
+  `status` tinyint(1) UNSIGNED NOT NULL DEFAULT 1 COMMENT '状态：1启用，0停用',
+  `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_status_sort`(`status`, `sort_order`) USING BTREE,
+  INDEX `idx_intent_status`(`intent`, `status`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '商家运营Agent RAG评测用例表' ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for tb_agent_knowledge_eval_run
+-- ----------------------------
+CREATE TABLE IF NOT EXISTS `tb_agent_knowledge_eval_run` (
+  `id` bigint(20) UNSIGNED NOT NULL COMMENT '主键，建议使用 RedisIdWorker 生成',
+  `case_source` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'default' COMMENT '用例来源：custom/persisted/default/default_fallback',
+  `limit_count` int(11) UNSIGNED NOT NULL DEFAULT 3 COMMENT '本次评测使用的 TopK 数量',
+  `total_count` int(11) UNSIGNED NOT NULL DEFAULT 0 COMMENT '评测用例总数',
+  `top1_pass_count` int(11) UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Top1 命中数量',
+  `topk_pass_count` int(11) UNSIGNED NOT NULL DEFAULT 0 COMMENT 'TopK 命中数量',
+  `no_reliable_hit_count` int(11) UNSIGNED NOT NULL DEFAULT 0 COMMENT '无可靠召回数量',
+  `top1_pass_rate` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '0.00%' COMMENT 'Top1 命中率',
+  `topk_pass_rate` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '0.00%' COMMENT 'TopK 命中率',
+  `vector_min_similarity` decimal(8,4) NOT NULL DEFAULT 0.0000 COMMENT '本次评测使用的向量相似度最低阈值',
+  `result_snapshot` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci COMMENT '完整评测结果JSON快照',
+  `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_create_time`(`create_time`) USING BTREE,
+  INDEX `idx_case_source_time`(`case_source`, `create_time`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '商家运营Agent RAG评测运行记录表' ROW_FORMAT = Dynamic;
+
 SET FOREIGN_KEY_CHECKS = 1;

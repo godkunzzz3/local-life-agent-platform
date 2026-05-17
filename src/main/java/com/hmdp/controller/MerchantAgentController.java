@@ -9,6 +9,8 @@ import com.hmdp.dto.MerchantAgentChatRequest;
 import com.hmdp.dto.Result;
 import com.hmdp.service.IMerchantAgentFacadeService;
 import com.hmdp.service.IMerchantAgentKnowledgeDocService;
+import com.hmdp.service.IMerchantAgentKnowledgeEvalCaseService;
+import com.hmdp.service.IMerchantAgentKnowledgeEvalRunService;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -28,6 +30,10 @@ public class MerchantAgentController {
     private IMerchantAgentFacadeService merchantAgentFacadeService;
     @Resource
     private IMerchantAgentKnowledgeDocService merchantAgentKnowledgeDocService;
+    @Resource
+    private IMerchantAgentKnowledgeEvalCaseService merchantAgentKnowledgeEvalCaseService;
+    @Resource
+    private IMerchantAgentKnowledgeEvalRunService merchantAgentKnowledgeEvalRunService;
 
     /**
      * 查询 Agent 工具清单。
@@ -152,6 +158,39 @@ public class MerchantAgentController {
     @PostMapping("/knowledge-docs/evaluate")
     public Result evaluateKnowledgeRetrieval(@RequestBody(required = false) AgentKnowledgeEvaluateRequest request) {
         return merchantAgentKnowledgeDocService.evaluateRetrieval(request);
+    }
+
+    /**
+     * 查询 RAG 召回评测用例。
+     *
+     * <p>这些用例相当于 Agent 知识库的回归测试集。维护好测试集后，
+     * 每次调整知识库、Prompt 或相似度阈值，都能用同一批问题验证召回效果。</p>
+     */
+    @GetMapping("/knowledge-docs/evaluate-cases")
+    public Result queryKnowledgeEvalCases() {
+        return merchantAgentKnowledgeEvalCaseService.queryEnabledCases();
+    }
+
+    /**
+     * 保存 RAG 召回评测用例。
+     *
+     * <p>学习阶段采用整体替换策略：前端传入当前测试集，后端停用旧用例并写入新用例。
+     * 这样比逐条新增/删除更容易理解，也更适合当前单人学习项目。</p>
+     */
+    @PutMapping("/knowledge-docs/evaluate-cases")
+    public Result replaceKnowledgeEvalCases(@RequestBody AgentKnowledgeEvaluateRequest request) {
+        return merchantAgentKnowledgeEvalCaseService.replaceEnabledCases(request);
+    }
+
+    /**
+     * 查询最近的 RAG 召回评测运行记录。
+     *
+     * <p>评测用例只是“测试题”，运行记录才是每次调参后的“成绩单”。
+     * 前端可以用这个接口展示最近几次 Top1/TopK 命中率，帮助判断知识库优化是否有效。</p>
+     */
+    @GetMapping("/knowledge-docs/evaluate-runs")
+    public Result queryKnowledgeEvalRuns(@RequestParam(value = "limit", required = false) Integer limit) {
+        return merchantAgentKnowledgeEvalRunService.queryRecentRuns(limit);
     }
 
     /**
