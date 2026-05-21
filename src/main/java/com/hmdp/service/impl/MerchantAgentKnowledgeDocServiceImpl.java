@@ -343,6 +343,7 @@ public class MerchantAgentKnowledgeDocServiceImpl
         result.put("caseSource", caseSource);
         result.put("maxCaseCount", MAX_EVALUATION_CASES);
         result.put("items", rows);
+        result.put("diagnosis", buildEvaluationDiagnosis(rows));
         result.put("vectorMinSimilarity", VECTOR_MIN_SIMILARITY);
         result.put("explain", "评测口径：Top1 命中衡量第一条是否准确；TopK 命中衡量通过质量闸门后的候选结果是否覆盖预期分类。");
 
@@ -363,7 +364,7 @@ public class MerchantAgentKnowledgeDocServiceImpl
         // 注意这里返回的是“候选分类列表”，不是唯一分类，避免普通优惠券问题被硬路由到秒杀规则。
         List<String> categories = resolveCategoriesForRetrieval(intent, userMessage);
 
-        // 第一优先级：语义向量检索。只要命中，就直接返回 TopK。
+        // 第一优先级：语义向量检索。向量先粗召回，再用规则版 Rerank 精排 TopK。
         List<Map<String, Object>> vectorHits = retrieveByVector(categories, userMessage, safeLimit);
         if (!vectorHits.isEmpty()) {
             return vectorHits;
@@ -379,8 +380,9 @@ public class MerchantAgentKnowledgeDocServiceImpl
      * <p>业务逻辑：
      * 1. 先把商家问题转换成 query 向量；
      * 2. 再读取同分类知识 chunk 的 doc 向量；
-     * 3. 用余弦相似度排序，取 TopK；
-     * 4. 把相似度分数返回给前端和 PromptContext，方便观察 RAG 命中依据。</p>
+     * 3. 用余弦相似度做粗排，保留 TopN 候选；
+     * 4. 用规则版 Rerank 结合分类、标题、正文关键词重新排序；
+     * 5. 把相似度和 rerank 分数返回给前端，方便观察排序依据。</p>
      */
     private List<Map<String, Object>> retrieveByVector(List<String> categories, String userMessage, int safeLimit) {
         // 1. 把商家输入的问题向量化，例如“帮我设计周末秒杀券” -> queryVector。
@@ -416,23 +418,25 @@ public class MerchantAgentKnowledgeDocServiceImpl
             scoredDocs.add(new ScoredKnowledgeDoc(doc, score));
         }
 
-        // 5. 按相似度从高到低排序，分数最高的知识片段最先进入 Prompt。
+        // 5. 按相似度从高到低排序，先得到语义粗召回候选。
         scoredDocs.sort(Comparator.comparingDouble(ScoredKnowledgeDoc::getScore).reversed());
 
         List<Map<String, Object>> rows = new ArrayList<>();
-        for (int i = 0; i < Math.min(safeLimit, scoredDocs.size()); i++) {
+        int candidateLimit = Math.min(Math.max(safeLimit * 4, safeLimit), scoredDocs.size());
+        for (int i = 0; i < candidateLimit; i++) {
             ScoredKnowledgeDoc scoredDoc = scoredDocs.get(i);
             Map<String, Object> row = toDocRow(scoredDoc.getDoc());
 
             // retrievalMode 和 similarityScore 会返回给前端调试面板，便于观察 RAG 是否真的命中。
             row.put("retrievalMode", "semantic_vector");
             row.put("similarityScore", roundScore(scoredDoc.getScore()));
+            row.put("originalScore", roundScore(scoredDoc.getScore()));
             row.put("qualityStatus", "passed");
             row.put("minSimilarity", VECTOR_MIN_SIMILARITY);
             row.put("candidateCategories", categories);
             rows.add(row);
         }
-        return rows;
+        return rerankKnowledgeRows(rows, categories, userMessage, safeLimit);
     }
 
     /**
@@ -449,6 +453,7 @@ public class MerchantAgentKnowledgeDocServiceImpl
             // 否则“我帅吗”这类问题也可能被塞入优惠券规则，造成 Prompt 噪音。
             return new ArrayList<>();
         }
+        int candidateLimit = Math.max(safeLimit * 4, safeLimit);
         List<AgentKnowledgeDoc> docs = query()
                 .eq("status", 1)
                 .in(hasCategories(categories), "category", categories)
@@ -457,7 +462,7 @@ public class MerchantAgentKnowledgeDocServiceImpl
                         .or()
                         .like("content", keyword))
                 .orderByDesc("update_time")
-                .last("LIMIT " + safeLimit)
+                .last("LIMIT " + candidateLimit)
                 .list();
 
         if (docs.isEmpty() && hasCategories(categories)) {
@@ -467,7 +472,7 @@ public class MerchantAgentKnowledgeDocServiceImpl
                     .eq("status", 1)
                     .in("category", categories)
                     .orderByDesc("update_time")
-                    .last("LIMIT " + safeLimit)
+                    .last("LIMIT " + candidateLimit)
                     .list();
         }
 
@@ -476,8 +481,141 @@ public class MerchantAgentKnowledgeDocServiceImpl
             row.put("retrievalMode", "mysql_keyword_fallback");
             row.put("qualityStatus", isBlank(keyword) ? "category_fallback" : "keyword_fallback");
             row.put("candidateCategories", categories);
+            row.put("originalScore", 0);
         }
-        return rows;
+        return rerankKnowledgeRows(rows, categories, userMessage, safeLimit);
+    }
+
+    /**
+     * 规则版 Rerank。
+     *
+     * <p>第一版先不接额外模型，而是用可解释规则做精排：
+     * 原始向量相似度负责“语义相关”，候选分类负责“业务方向”，标题/正文命中负责“文本证据”。
+     * 这样做的好处是成本低、可解释，适合学习阶段先把二阶段检索链路跑通。</p>
+     */
+    private List<Map<String, Object>> rerankKnowledgeRows(List<Map<String, Object>> rows,
+                                                          List<String> categories,
+                                                          String userMessage,
+                                                          int safeLimit) {
+        if (rows == null || rows.isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        List<String> terms = extractRerankTerms(userMessage);
+        for (int i = 0; i < rows.size(); i++) {
+            Map<String, Object> row = rows.get(i);
+            // originalRank 表示粗召回阶段的名次，后面和 rerankRank 对比即可观察精排是否生效。
+            row.put("originalRank", i + 1);
+            RerankResult result = scoreKnowledgeRow(row, categories, terms);
+            row.put("rerankMode", "rule_v1");
+            row.put("rerankScore", roundScore(result.score));
+            row.put("rerankReason", result.reason);
+        }
+
+        rows.sort((left, right) -> {
+            int rerankCompare = Double.compare(numberValue(right.get("rerankScore")), numberValue(left.get("rerankScore")));
+            if (rerankCompare != 0) {
+                return rerankCompare;
+            }
+            return Double.compare(numberValue(right.get("originalScore")), numberValue(left.get("originalScore")));
+        });
+
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (int i = 0; i < Math.min(safeLimit, rows.size()); i++) {
+            Map<String, Object> row = rows.get(i);
+            int rerankRank = i + 1;
+            int originalRank = (int) numberValue(row.get("originalRank"));
+            row.put("rerankRank", rerankRank);
+            row.put("rerankDelta", originalRank - rerankRank);
+            result.add(row);
+        }
+        return result;
+    }
+
+    private RerankResult scoreKnowledgeRow(Map<String, Object> row, List<String> categories, List<String> terms) {
+        String category = String.valueOf(row.getOrDefault("category", ""));
+        String title = String.valueOf(row.getOrDefault("title", ""));
+        String content = String.valueOf(row.getOrDefault("content", ""));
+
+        double originalScore = numberValue(row.get("originalScore"));
+        double score = originalScore * 60D;
+        List<String> reasons = new ArrayList<>();
+        if (originalScore > 0) {
+            reasons.add("语义相似度 " + roundScore(originalScore));
+        }
+
+        if (categories != null && categories.contains(category)) {
+            score += 20D;
+            reasons.add("命中候选分类");
+        }
+
+        int titleHits = countTermHits(title, terms);
+        if (titleHits > 0) {
+            score += Math.min(18D, titleHits * 6D);
+            reasons.add("标题命中关键词 " + titleHits + " 个");
+        }
+
+        int contentHits = countTermHits(content, terms);
+        if (contentHits > 0) {
+            score += Math.min(12D, contentHits * 3D);
+            reasons.add("正文命中关键词 " + contentHits + " 个");
+        }
+
+        if (reasons.isEmpty()) {
+            reasons.add("按默认候选顺序保留");
+        }
+        return new RerankResult(score, String.join("；", reasons));
+    }
+
+    private List<String> extractRerankTerms(String userMessage) {
+        List<String> terms = new ArrayList<>();
+        if (isBlank(userMessage)) {
+            return terms;
+        }
+
+        String[] businessTerms = {
+                "秒杀", "周末", "限时", "抢购", "优惠券", "代金券", "折扣", "满减", "拉新", "复购",
+                "成本", "利润", "毛利", "订单", "成交", "支付", "核销", "转化",
+                "评价", "评论", "口碑", "探店", "内容", "风险", "人工确认", "库存"
+        };
+        for (String term : businessTerms) {
+            if (userMessage.contains(term)) {
+                addCategory(terms, term);
+            }
+        }
+
+        String keyword = resolveKeyword(userMessage, "operation_chat");
+        if (!isBlank(keyword)) {
+            addCategory(terms, keyword);
+        }
+        return terms;
+    }
+
+    private int countTermHits(String text, List<String> terms) {
+        if (isBlank(text) || terms == null || terms.isEmpty()) {
+            return 0;
+        }
+        int count = 0;
+        for (String term : terms) {
+            if (!isBlank(term) && text.contains(term)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private double numberValue(Object value) {
+        if (value instanceof Number) {
+            return ((Number) value).doubleValue();
+        }
+        if (value == null) {
+            return 0D;
+        }
+        try {
+            return Double.parseDouble(String.valueOf(value));
+        } catch (NumberFormatException e) {
+            return 0D;
+        }
     }
 
     private Result validateCreateRequest(AgentKnowledgeDocRequest request) {
@@ -773,6 +911,13 @@ public class MerchantAgentKnowledgeDocServiceImpl
             doc.put("category", hit.get("category"));
             doc.put("categoryName", hit.get("categoryName"));
             doc.put("similarityScore", hit.get("similarityScore"));
+            doc.put("originalScore", hit.get("originalScore"));
+            doc.put("originalRank", hit.get("originalRank"));
+            doc.put("rerankRank", hit.get("rerankRank"));
+            doc.put("rerankDelta", hit.get("rerankDelta"));
+            doc.put("rerankScore", hit.get("rerankScore"));
+            doc.put("rerankReason", hit.get("rerankReason"));
+            doc.put("rerankMode", hit.get("rerankMode"));
             doc.put("retrievalMode", hit.get("retrievalMode"));
             topDocs.add(doc);
         }
@@ -794,6 +939,7 @@ public class MerchantAgentKnowledgeDocServiceImpl
         row.put("topKPassed", topKPassed);
         row.put("noReliableHit", noReliableHit);
         row.put("reason", resolveEvaluationReason(top1Passed, topKPassed, noReliableHit));
+        row.put("diagnosis", diagnoseEvaluationCase(expectedCategories, hitCategories, top1Passed, topKPassed, noReliableHit));
         return row;
     }
 
@@ -812,6 +958,131 @@ public class MerchantAgentKnowledgeDocServiceImpl
             return "没有可靠知识通过质量闸门，可能需要向量化知识或降低阈值";
         }
         return "TopK 未命中期望分类，需要补充知识或调整召回策略";
+    }
+
+    /**
+     * 生成单条用例诊断。
+     *
+     * <p>这里把评测结果翻译成“可以行动”的问题类型：
+     * 1. 没有可靠召回：优先检查向量化、阈值、知识覆盖；
+     * 2. TopK 命中但 Top1 未命中：说明知识在候选里，但排序不够好；
+     * 3. TopK 未命中但有召回：说明召回到了错误分类，通常要看分类路由或补知识。</p>
+     */
+    private Map<String, Object> diagnoseEvaluationCase(List<String> expectedCategories,
+                                                       List<String> hitCategories,
+                                                       boolean top1Passed,
+                                                       boolean topKPassed,
+                                                       boolean noReliableHit) {
+        Map<String, Object> diagnosis = new LinkedHashMap<>();
+        if (top1Passed) {
+            diagnosis.put("type", "OK");
+            diagnosis.put("title", "召回正常");
+            diagnosis.put("advice", "Top1 已命中期望分类，当前用例暂不需要调整。");
+            return diagnosis;
+        }
+        if (topKPassed) {
+            diagnosis.put("type", "RANKING_WEAK");
+            diagnosis.put("title", "排序不够稳定");
+            diagnosis.put("advice", "相关知识已经进入 TopK，但第一条不是最佳分类。建议结合 Rerank 排名变化，补充更聚焦的标题、正文关键词或调整精排权重。");
+            return diagnosis;
+        }
+        if (noReliableHit) {
+            diagnosis.put("type", "NO_RELIABLE_HIT");
+            diagnosis.put("title", "没有可靠召回");
+            diagnosis.put("advice", "没有知识通过质量闸门。建议检查对应分类知识是否已向量化，必要时补充知识或重新评估相似度阈值。");
+            return diagnosis;
+        }
+
+        diagnosis.put("type", "CATEGORY_MISMATCH");
+        diagnosis.put("title", "召回分类偏移");
+        diagnosis.put("advice", "已召回知识，但命中分类与预期不一致。建议检查意图到知识分类的路由规则，或补充 " + joinCategories(expectedCategories) + " 相关知识。");
+        diagnosis.put("expectedCategories", expectedCategories);
+        diagnosis.put("hitCategories", hitCategories);
+        return diagnosis;
+    }
+
+    /**
+     * 生成整批评测的自动诊断摘要。
+     *
+     * <p>这相当于给 RAG 评测结果做一次“小体检”：不只给通过率，
+     * 还告诉开发者主要问题集中在哪里，下一步优先修什么。</p>
+     */
+    private Map<String, Object> buildEvaluationDiagnosis(List<Map<String, Object>> rows) {
+        int noReliableHitCount = 0;
+        int rankingWeakCount = 0;
+        int categoryMismatchCount = 0;
+        int passedCount = 0;
+        List<Map<String, Object>> failedCases = new ArrayList<>();
+
+        for (Map<String, Object> row : rows) {
+            Map<String, Object> diagnosis = (Map<String, Object>) row.get("diagnosis");
+            String type = diagnosis == null ? "" : String.valueOf(diagnosis.getOrDefault("type", ""));
+            if ("OK".equals(type)) {
+                passedCount++;
+                continue;
+            }
+            if ("NO_RELIABLE_HIT".equals(type)) {
+                noReliableHitCount++;
+            } else if ("RANKING_WEAK".equals(type)) {
+                rankingWeakCount++;
+            } else if ("CATEGORY_MISMATCH".equals(type)) {
+                categoryMismatchCount++;
+            }
+
+            Map<String, Object> failedCase = new LinkedHashMap<>();
+            failedCase.put("message", row.get("message"));
+            failedCase.put("type", type);
+            failedCase.put("title", diagnosis == null ? "未知问题" : diagnosis.get("title"));
+            failedCase.put("advice", diagnosis == null ? "请查看评测详情进一步定位。" : diagnosis.get("advice"));
+            failedCases.add(failedCase);
+        }
+
+        List<String> recommendations = new ArrayList<>();
+        if (noReliableHitCount > 0) {
+            recommendations.add("优先检查未召回用例对应分类的知识是否已向量化，并确认相似度阈值是否过高。");
+        }
+        if (categoryMismatchCount > 0) {
+            recommendations.add("检查商家问题到知识分类的路由规则，避免普通优惠券、秒杀券、评价问题互相串类。");
+        }
+        if (rankingWeakCount > 0) {
+            recommendations.add("对 TopK 命中但 Top1 不准的用例，观察 Rerank 是否把目标知识前移；如果没有前移，优先补充标题关键词或调整精排权重。");
+        }
+        if (recommendations.isEmpty()) {
+            recommendations.add("当前评测集表现稳定，可以继续增加更难的边界用例验证 RAG 鲁棒性。");
+        }
+
+        Map<String, Object> diagnosis = new LinkedHashMap<>();
+        diagnosis.put("level", rows.isEmpty() || failedCases.isEmpty() ? "GOOD" : (failedCases.size() >= Math.max(2, rows.size() / 2) ? "RISK" : "WARN"));
+        diagnosis.put("title", failedCases.isEmpty() ? "RAG 召回稳定" : resolveBatchDiagnosisTitle(noReliableHitCount, rankingWeakCount, categoryMismatchCount));
+        diagnosis.put("summary", failedCases.isEmpty()
+                ? "本轮评测没有发现失败样本，TopK 召回覆盖了预期分类。"
+                : "本轮发现 " + failedCases.size() + " 条需要关注的样本，其中无可靠召回 " + noReliableHitCount
+                + " 条、排序不稳定 " + rankingWeakCount + " 条、分类偏移 " + categoryMismatchCount + " 条。");
+        diagnosis.put("passedCount", passedCount);
+        diagnosis.put("failedCount", failedCases.size());
+        diagnosis.put("noReliableHitCount", noReliableHitCount);
+        diagnosis.put("rankingWeakCount", rankingWeakCount);
+        diagnosis.put("categoryMismatchCount", categoryMismatchCount);
+        diagnosis.put("recommendations", recommendations);
+        diagnosis.put("failedCases", failedCases);
+        return diagnosis;
+    }
+
+    private String resolveBatchDiagnosisTitle(int noReliableHitCount, int rankingWeakCount, int categoryMismatchCount) {
+        if (noReliableHitCount >= rankingWeakCount && noReliableHitCount >= categoryMismatchCount) {
+            return "主要问题：可靠召回不足";
+        }
+        if (categoryMismatchCount >= rankingWeakCount) {
+            return "主要问题：召回分类偏移";
+        }
+        return "主要问题：Top1 排序不稳定";
+    }
+
+    private String joinCategories(List<String> categories) {
+        if (categories == null || categories.isEmpty()) {
+            return "目标分类";
+        }
+        return String.join("、", categories);
     }
 
     private List<AgentKnowledgeEvaluateRequest.CaseItem> sanitizeEvaluationCases(List<AgentKnowledgeEvaluateRequest.CaseItem> rawCases) {
@@ -907,6 +1178,19 @@ public class MerchantAgentKnowledgeDocServiceImpl
 
         private double getScore() {
             return score;
+        }
+    }
+
+    /**
+     * Rerank 内部打分结果。
+     */
+    private static class RerankResult {
+        private final double score;
+        private final String reason;
+
+        private RerankResult(double score, String reason) {
+            this.score = score;
+            this.reason = reason;
         }
     }
 }

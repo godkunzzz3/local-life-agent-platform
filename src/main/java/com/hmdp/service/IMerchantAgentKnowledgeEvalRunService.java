@@ -25,4 +25,11 @@ public interface IMerchantAgentKnowledgeEvalRunService extends IService<AgentKno
      * 查询最近的评测运行记录。
      */
     Result queryRecentRuns(Integer limit);
+
+    /**
+     * 查询单次评测运行详情。
+     *
+     * <p>详情会返回保存时的完整 JSON 快照，用于复盘每条用例的 Top1/TopK 召回结果。</p>
+     */
+    Result queryRunDetail(Long runId);
 }

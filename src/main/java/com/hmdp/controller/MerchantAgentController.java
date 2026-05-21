@@ -194,6 +194,17 @@ public class MerchantAgentController {
     }
 
     /**
+     * 查询单次 RAG 召回评测运行详情。
+     *
+     * <p>用于从趋势图或历史列表继续下钻：查看每条用例的预期分类、命中分类、
+     * Top1 文档和失败原因，帮助定位知识库或召回策略需要优化的位置。</p>
+     */
+    @GetMapping("/knowledge-docs/evaluate-runs/{runId}")
+    public Result queryKnowledgeEvalRunDetail(@PathVariable("runId") Long runId) {
+        return merchantAgentKnowledgeEvalRunService.queryRunDetail(runId);
+    }
+
+    /**
      * 生成店铺运营报告。
      *
      * <p>这是 MerchantOperationAgent 的第一个接口。当前先使用 Java 规则生成报告，

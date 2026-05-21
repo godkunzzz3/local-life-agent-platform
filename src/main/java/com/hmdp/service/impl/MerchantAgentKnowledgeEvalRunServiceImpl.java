@@ -70,24 +70,56 @@ public class MerchantAgentKnowledgeEvalRunServiceImpl
         return Result.ok(toRows(runs));
     }
 
+    @Override
+    public Result queryRunDetail(Long runId) {
+        if (runId == null) {
+            return Result.fail("评测运行id不能为空");
+        }
+        AgentKnowledgeEvalRun run = getById(runId);
+        if (run == null) {
+            return Result.fail("评测运行记录不存在");
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("summary", toRow(run));
+        result.put("snapshot", parseSnapshot(run.getResultSnapshot()));
+        return Result.ok(result);
+    }
+
     private List<Map<String, Object>> toRows(List<AgentKnowledgeEvalRun> runs) {
         List<Map<String, Object>> rows = new ArrayList<>();
         for (AgentKnowledgeEvalRun run : runs) {
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("runId", String.valueOf(run.getId()));
-            row.put("caseSource", run.getCaseSource());
-            row.put("limit", run.getLimitCount());
-            row.put("total", run.getTotalCount());
-            row.put("top1PassCount", run.getTop1PassCount());
-            row.put("topKPassCount", run.getTopkPassCount());
-            row.put("noReliableHitCount", run.getNoReliableHitCount());
-            row.put("top1PassRate", run.getTop1PassRate());
-            row.put("topKPassRate", run.getTopkPassRate());
-            row.put("vectorMinSimilarity", run.getVectorMinSimilarity());
-            row.put("createTime", run.getCreateTime());
-            rows.add(row);
+            rows.add(toRow(run));
         }
         return rows;
+    }
+
+    private Map<String, Object> toRow(AgentKnowledgeEvalRun run) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("runId", String.valueOf(run.getId()));
+        row.put("caseSource", run.getCaseSource());
+        row.put("limit", run.getLimitCount());
+        row.put("total", run.getTotalCount());
+        row.put("top1PassCount", run.getTop1PassCount());
+        row.put("topKPassCount", run.getTopkPassCount());
+        row.put("noReliableHitCount", run.getNoReliableHitCount());
+        row.put("top1PassRate", run.getTop1PassRate());
+        row.put("topKPassRate", run.getTopkPassRate());
+        row.put("vectorMinSimilarity", run.getVectorMinSimilarity());
+        row.put("createTime", run.getCreateTime());
+        return row;
+    }
+
+    private Object parseSnapshot(String snapshot) {
+        if (snapshot == null || snapshot.trim().isEmpty()) {
+            return new LinkedHashMap<>();
+        }
+        try {
+            return JSONUtil.parseObj(snapshot);
+        } catch (Exception e) {
+            log.warn("解析 RAG 评测快照失败，runSnapshot={}", snapshot, e);
+            return new LinkedHashMap<>();
+        }
     }
 
     private int intValue(Object value) {
