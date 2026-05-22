@@ -18,6 +18,7 @@ public class OperationDiagnosisToolDescriptor implements AgentToolDescriptor {
     public AgentToolDefinitionDTO definition() {
         return new AgentToolDefinitionDTO()
                 .setName("operation_diagnosis_tool")
+                .setModelToolName("getOperationDiagnosis")
                 .setDisplayName("综合运营诊断工具")
                 .setDescription("组合店铺画像、订单分析、优惠券结构和评价内容，生成综合运营上下文。")
                 .setCategory("operation")

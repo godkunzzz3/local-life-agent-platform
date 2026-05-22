@@ -33,6 +33,7 @@ public class ReviewAgentTool implements AgentToolDescriptor {
     public AgentToolDefinitionDTO definition() {
         return new AgentToolDefinitionDTO()
                 .setName("review_content_tool")
+                .setModelToolName("getShopReviewSummary")
                 .setDisplayName("评价内容分析工具")
                 .setDescription("查询店铺探店笔记和评论，汇总内容数量、点赞、评论和互动等级。")
                 .setCategory("review")

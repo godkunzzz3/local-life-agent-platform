@@ -25,6 +25,7 @@ public class ShopAgentTool implements AgentToolDescriptor {
     public AgentToolDefinitionDTO definition() {
         return new AgentToolDefinitionDTO()
                 .setName("shop_profile_tool")
+                .setModelToolName("getShopProfile")
                 .setDisplayName("店铺画像工具")
                 .setDescription("查询店铺基础信息，并组装成 Agent 可理解的店铺画像。")
                 .setCategory("shop")

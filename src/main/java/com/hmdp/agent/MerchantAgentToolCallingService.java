@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hmdp.dto.AgentFlowStepDTO;
+import com.hmdp.dto.AgentToolDefinitionDTO;
 import com.hmdp.dto.MerchantAgentChatRequest;
 import com.hmdp.entity.AgentMessage;
 import com.hmdp.entity.Blog;
@@ -16,6 +17,7 @@ import com.hmdp.service.IMerchantAgentKnowledgeDocService;
 import com.hmdp.tool.OrderAgentTool;
 import com.hmdp.tool.ReviewAgentTool;
 import com.hmdp.tool.ShopAgentTool;
+import com.hmdp.tool.AgentToolRegistry;
 import com.hmdp.tool.VoucherAgentTool;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.agent.tool.ToolSpecification;
@@ -56,6 +58,7 @@ public class MerchantAgentToolCallingService {
     private static final String TOOL_GET_ORDER_STATS = "getShopOrderStats";
     private static final String TOOL_GET_VOUCHERS = "getShopVouchers";
     private static final String TOOL_GET_REVIEW_SUMMARY = "getShopReviewSummary";
+    private static final String TOOL_GET_OPERATION_DIAGNOSIS = "getOperationDiagnosis";
 
     @Value("${merchant-agent.model.api-key:}")
     private String apiKey;
@@ -82,6 +85,8 @@ public class MerchantAgentToolCallingService {
     private VoucherAgentTool voucherAgentTool;
     @Resource
     private ReviewAgentTool reviewAgentTool;
+    @Resource
+    private AgentToolRegistry agentToolRegistry;
     @Resource
     private MerchantAgentPromptTemplateService promptTemplateService;
     @Resource
@@ -237,35 +242,25 @@ public class MerchantAgentToolCallingService {
                 .replace("{{ragKnowledge}}", buildRagPromptSection(ragKnowledge));
     }
 
+    /**
+     * 构建暴露给大模型的 LangChain4j Tool 列表。
+     *
+     * <p>学习重点：这里不再手写固定工具数组，而是读取 AgentToolRegistry。
+     * 这样新增只读工具时，只要工具定义里标记 modelCallable=true，
+     * 模型可见工具列表就会自动更新；草稿/执行类写工具则会被注册表过滤掉。</p>
+     */
     private List<ToolSpecification> toolSpecifications() {
-        return Arrays.asList(
-                ToolSpecification.builder()
-                        .name(TOOL_GET_SHOP_PROFILE)
-                        .description("查询当前店铺基础信息，适合回答店铺名称、地址、评分、人均、营业时间等问题。")
-                        .parameters(baseShopIdSchema())
-                        .build(),
-                ToolSpecification.builder()
-                        .name(TOOL_GET_ORDER_STATS)
-                        .description("查询当前店铺订单统计，适合分析订单量、支付量、核销、退款、预计收入和转化率。")
-                        .parameters(JsonObjectSchema.builder()
-                                .addIntegerProperty("shopId", "店铺ID，必须使用当前店铺ID")
-                                .addEnumProperty("dateRange", Arrays.asList("TODAY", "LAST_7_DAYS", "LAST_30_DAYS"),
-                                        "统计范围，默认 LAST_7_DAYS")
-                                .required("shopId")
-                                .additionalProperties(false)
-                                .build())
-                        .build(),
-                ToolSpecification.builder()
-                        .name(TOOL_GET_VOUCHERS)
-                        .description("查询当前店铺优惠券和秒杀券结构，适合判断券力度、库存、是否需要新增活动。")
-                        .parameters(baseShopIdSchema())
-                        .build(),
-                ToolSpecification.builder()
-                        .name(TOOL_GET_REVIEW_SUMMARY)
-                        .description("查询当前店铺评价和探店内容摘要，适合分析口碑、内容互动和用户信任问题。")
-                        .parameters(baseShopIdSchema())
-                        .build()
-        );
+        List<ToolSpecification> specifications = new ArrayList<>();
+        for (AgentToolDefinitionDTO definition : agentToolRegistry.listModelCallableDefinitions()) {
+            String modelToolName = resolveModelToolName(definition);
+            ToolSpecification specification = ToolSpecification.builder()
+                    .name(modelToolName)
+                    .description(definition.getDescription())
+                    .parameters(toolParameterSchema(modelToolName))
+                    .build();
+            specifications.add(specification);
+        }
+        return specifications;
     }
 
     private JsonObjectSchema baseShopIdSchema() {
@@ -274,6 +269,43 @@ public class MerchantAgentToolCallingService {
                 .required("shopId")
                 .additionalProperties(false)
                 .build();
+    }
+
+    /**
+     * 根据模型函数名生成参数 schema。
+     *
+     * <p>不同工具需要的参数不一样：店铺画像只需要 shopId，
+     * 订单统计和综合诊断还需要 dateRange。schema 写清楚后，
+     * 大模型才知道调用工具时应该传哪些参数。</p>
+     */
+    private JsonObjectSchema toolParameterSchema(String modelToolName) {
+        if (TOOL_GET_ORDER_STATS.equals(modelToolName) || TOOL_GET_OPERATION_DIAGNOSIS.equals(modelToolName)) {
+            return JsonObjectSchema.builder()
+                    .addIntegerProperty("shopId", "店铺ID，必须使用当前店铺ID")
+                    .addEnumProperty("dateRange", Arrays.asList("TODAY", "LAST_7_DAYS", "LAST_30_DAYS"),
+                            "统计范围，默认 LAST_7_DAYS")
+                    .required("shopId")
+                    .additionalProperties(false)
+                    .build();
+        }
+        return baseShopIdSchema();
+    }
+
+    /**
+     * 解析模型侧工具名。
+     *
+     * <p>内部工具名用于后端审计，例如 order_analysis_tool；
+     * 模型工具名用于 Tool Calling，例如 getShopOrderStats。
+     * 两者分开后，既方便后端排查日志，也能让模型看到更自然的函数名。</p>
+     */
+    private String resolveModelToolName(AgentToolDefinitionDTO definition) {
+        if (definition == null) {
+            return "";
+        }
+        if (!isBlank(definition.getModelToolName())) {
+            return definition.getModelToolName();
+        }
+        return definition.getName();
     }
 
     private Object executeReadonlyTool(Shop shop, ToolExecutionRequest toolRequest) {
@@ -311,6 +343,25 @@ public class MerchantAgentToolCallingService {
             List<Blog> blogs = reviewAgentTool.queryShopBlogs(shop.getId());
             List<BlogComments> comments = reviewAgentTool.queryComments(blogs);
             Map<String, Object> result = new LinkedHashMap<>();
+            result.put("reviewAnalysis", reviewAgentTool.buildReviewAnalysis(blogs, comments));
+            return result;
+        }
+        if (TOOL_GET_OPERATION_DIAGNOSIS.equals(toolName)) {
+            // 综合诊断工具是只读组合工具：一次性读取店铺、订单、优惠券和评价上下文，
+            // 适合“分析经营情况”这类宽泛问题，避免模型连续调用多个小工具导致链路过长。
+            DateRange range = resolveDateRange(String.valueOf(args.getOrDefault("dateRange", "LAST_7_DAYS")));
+            List<Voucher> vouchers = voucherAgentTool.queryShopVouchers(shop.getId());
+            List<Long> voucherIds = vouchers.stream().map(Voucher::getId).collect(Collectors.toList());
+            Map<Long, Voucher> voucherMap = vouchers.stream().collect(Collectors.toMap(Voucher::getId, voucher -> voucher));
+            List<VoucherOrder> orders = orderAgentTool.queryOrders(voucherIds, range.startTime);
+            List<SeckillVoucher> seckillVouchers = voucherAgentTool.querySeckillVouchers(voucherIds);
+            List<Blog> blogs = reviewAgentTool.queryShopBlogs(shop.getId());
+            List<BlogComments> comments = reviewAgentTool.queryComments(blogs);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("dateRange", range.code);
+            result.put("shopProfile", shopAgentTool.buildShopProfile(shop));
+            result.put("orderAnalysis", orderAgentTool.buildOrderAnalysis(orders, voucherMap));
+            result.put("voucherAnalysis", voucherAgentTool.buildVoucherAnalysis(vouchers, seckillVouchers));
             result.put("reviewAnalysis", reviewAgentTool.buildReviewAnalysis(blogs, comments));
             return result;
         }

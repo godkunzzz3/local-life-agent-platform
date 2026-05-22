@@ -32,6 +32,7 @@ public class OrderAgentTool implements AgentToolDescriptor {
     public AgentToolDefinitionDTO definition() {
         return new AgentToolDefinitionDTO()
                 .setName("order_analysis_tool")
+                .setModelToolName("getShopOrderStats")
                 .setDisplayName("订单分析工具")
                 .setDescription("按店铺优惠券查询订单，并汇总订单数、支付数、核销数、收入和转化率。")
                 .setCategory("order")

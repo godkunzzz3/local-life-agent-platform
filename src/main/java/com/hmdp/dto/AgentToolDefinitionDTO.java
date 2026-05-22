@@ -21,6 +21,14 @@ public class AgentToolDefinitionDTO {
     private String name;
 
     /**
+     * 暴露给大模型 Tool Calling 的函数名。
+     *
+     * <p>后端内部工具名通常偏业务审计，例如 order_analysis_tool；
+     * 模型函数名应该更像动作，例如 getShopOrderStats。两者分开可以避免内部命名污染模型上下文。</p>
+     */
+    private String modelToolName;
+
+    /**
      * 给商家或开发者看的工具名称。
      */
     private String displayName;

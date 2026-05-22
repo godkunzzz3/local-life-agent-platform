@@ -50,6 +50,7 @@ public class VoucherAgentTool implements AgentToolDescriptor {
     public AgentToolDefinitionDTO definition() {
         return new AgentToolDefinitionDTO()
                 .setName("voucher_campaign_tool")
+                .setModelToolName("createCampaignDraft")
                 .setDisplayName("优惠券活动工具")
                 .setDescription("分析店铺优惠券结构，生成活动草稿，并在商家确认后创建真实优惠券。")
                 .setCategory("voucher")

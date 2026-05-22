@@ -202,17 +202,56 @@ Agent 涉及真实业务动作时必须有人确认。
 
 每个工具都有统一元数据：
 
+- `name`：后端内部工具名，用于日志、审计和业务识别
+- `modelToolName`：暴露给大模型的函数名，更像一个可调用动作
 - `toolType`：readonly / draft / execute
 - `modelCallable`：是否允许模型直接调用
 - `executionPolicy`：direct / draft_only / human_confirm
 - `requireMerchantConfirm`：是否必须商家确认
 - `confirmReason`：为什么需要确认
 
+### 为什么要区分 name 和 modelToolName
+
+后端内部命名通常偏系统实现，例如 `order_analysis_tool`、`voucher_campaign_tool`，它们适合日志和审计。
+
+大模型看到的函数名应该更像自然动作，例如：
+
+- `getShopOrderStats`
+- `getShopReviewSummary`
+- `getOperationDiagnosis`
+
+这样模型更容易根据用户问题选择正确工具，也不会把后端内部命名暴露到 Prompt 里。
+
+### Tool Calling 注册表驱动
+
+早期可以在 LangChain4j 调用层手写工具列表，但工具越来越多后容易出现两个问题：
+
+1. 新增工具时忘记同步 Tool Calling 配置。
+2. 写工具被误暴露给模型，带来业务风险。
+
+因此项目引入 `AgentToolRegistry`：
+
+1. 每个工具实现统一描述能力。
+2. 注册表汇总全部工具。
+3. Tool Calling 只读取 `modelCallable=true` 的工具。
+4. 写操作工具虽然存在，但不会进入模型可见列表。
+
+例如优惠券能力被拆成两类：
+
+- `voucher_analysis_tool`：只读查询券结构，允许模型调用。
+- `voucher_campaign_tool`：生成活动草稿，可能进一步创建真实券，不允许模型直接调用。
+
+这个设计让工具扩展更像企业项目里的“能力注册中心”，而不是散落在各处的 if/else。
+
 ### 面试讲法
 
 可以这样说：
 
 > 我没有简单地把 Controller 接口直接暴露给大模型，而是抽象了一层 Agent Tool。每个工具都有风险等级、是否写库、是否需要人工确认、是否允许模型调用等元数据。模型只能看到低风险只读工具，写操作必须走草稿和人工确认流程。
+
+如果面试官继续问 Tool Calling 怎么扩展，可以补充：
+
+> 我把 LangChain4j 的 ToolSpecification 生成逻辑改成从 AgentToolRegistry 读取。新增工具时，只要实现工具描述并标记 `modelCallable=true`，模型可见工具列表就会自动更新；如果是草稿或执行类工具，则保留在后端流程里，不交给模型自由调用。
 
 这个点能体现你对 AI Agent 工程安全边界的理解。
 
