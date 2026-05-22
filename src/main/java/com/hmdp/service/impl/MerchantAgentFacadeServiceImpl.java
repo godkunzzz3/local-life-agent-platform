@@ -65,6 +65,42 @@ import static com.hmdp.utils.RedisConstants.SECKILL_STOCK_KEY;
 @Service
 public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeService {
 
+    /**
+     * 草稿标题对应 tb_agent_campaign_draft.title，数据库长度为 128。
+     */
+    private static final int DRAFT_TITLE_MAX_LENGTH = 128;
+
+    /**
+     * 副标题会同步到真实优惠券 tb_voucher.sub_title，这里按更短的展示文案控制。
+     */
+    private static final int DRAFT_SUB_TITLE_MAX_LENGTH = 120;
+
+    /**
+     * 真实优惠券 tb_voucher.rules 长度为 1024，确认创建前必须提前拦截。
+     */
+    private static final int VOUCHER_RULES_MAX_LENGTH = 1024;
+
+    /**
+     * 单张券面值上限，单位分。学习项目里先控制在 10000 元以内，避免异常输入创建超大面额券。
+     */
+    private static final long MAX_VOUCHER_AMOUNT = 1_000_000L;
+
+    /**
+     * 秒杀库存上限。Agent 场景建议小库存验证，过大库存必须由人工运营系统单独审核。
+     */
+    private static final int MAX_SECKILL_STOCK = 10_000;
+
+    /**
+     * 普通券最长有效期 180 天，秒杀活动最长 7 天，避免 Agent 草稿生成超长周期活动。
+     */
+    private static final int MAX_VOUCHER_DURATION_DAYS = 180;
+    private static final int MAX_SECKILL_DURATION_DAYS = 7;
+
+    /**
+     * 活动开始时间最多允许提前配置到一年内。
+     */
+    private static final int MAX_BEGIN_TIME_AFTER_DAYS = 365;
+
     @Resource
     private ShopAgentTool shopAgentTool;
     @Resource
@@ -584,27 +620,101 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     }
 
     private Result validateDraftUpdate(AgentCampaignDraft draft, MerchantCampaignDraftRequest request) {
+        String title = request.getTitle() == null ? draft.getTitle() : request.getTitle();
+        String subTitle = request.getSubTitle() == null ? draft.getSubTitle() : request.getSubTitle();
+        String rules = request.getRules() == null ? draft.getRules() : request.getRules();
         Long payValue = request.getPayValue() == null ? draft.getPayValue() : request.getPayValue();
         Long actualValue = request.getActualValue() == null ? draft.getActualValue() : request.getActualValue();
+        Integer stock = request.getStock() == null ? draft.getStock() : request.getStock();
+        LocalDateTime beginTime = request.getBeginTime() == null ? draft.getBeginTime() : request.getBeginTime();
+        LocalDateTime endTime = request.getEndTime() == null ? draft.getEndTime() : request.getEndTime();
+
+        return validateDraftBusinessFields(draft.getDraftType(), title, subTitle, rules, payValue, actualValue, stock, beginTime, endTime, false);
+    }
+
+    /**
+     * 活动草稿核心业务校验。
+     *
+     * <p>这层校验的目的不是替代数据库约束，而是在写库或创建真实券之前给出更可读的业务错误。
+     * Agent 输出、前端输入都可能不稳定，所以金额、库存、时间、短文本长度都要在后端兜住。</p>
+     */
+    private Result validateDraftBusinessFields(String draftType,
+                                               String title,
+                                               String subTitle,
+                                               String rules,
+                                               Long payValue,
+                                               Long actualValue,
+                                               Integer stock,
+                                               LocalDateTime beginTime,
+                                               LocalDateTime endTime,
+                                               boolean confirmStage) {
+        if (!"voucher".equals(draftType) && !"seckill".equals(draftType)) {
+            return Result.fail("草稿类型只能是普通代金券或秒杀券");
+        }
+        if (isBlank(title)) {
+            return Result.fail("活动标题不能为空");
+        }
+        if (textLength(title) > DRAFT_TITLE_MAX_LENGTH) {
+            return Result.fail("活动标题不能超过" + DRAFT_TITLE_MAX_LENGTH + "个字符");
+        }
+        if (textLength(subTitle) > DRAFT_SUB_TITLE_MAX_LENGTH) {
+            return Result.fail("活动副标题不能超过" + DRAFT_SUB_TITLE_MAX_LENGTH + "个字符");
+        }
+        if (textLength(rules) > VOUCHER_RULES_MAX_LENGTH) {
+            return Result.fail("活动规则不能超过" + VOUCHER_RULES_MAX_LENGTH + "个字符");
+        }
+        if (confirmStage && payValue == null) {
+            return Result.fail("支付金额不能为空");
+        }
+        if (confirmStage && actualValue == null) {
+            return Result.fail("抵扣金额不能为空");
+        }
         if (payValue != null && payValue <= 0) {
             return Result.fail("支付金额必须大于0");
         }
         if (actualValue != null && actualValue <= 0) {
             return Result.fail("抵扣金额必须大于0");
         }
+        if (payValue != null && payValue > MAX_VOUCHER_AMOUNT) {
+            return Result.fail("支付金额不能超过10000元");
+        }
+        if (actualValue != null && actualValue > MAX_VOUCHER_AMOUNT) {
+            return Result.fail("抵扣金额不能超过10000元");
+        }
         if (payValue != null && actualValue != null && payValue >= actualValue) {
             return Result.fail("支付金额必须小于抵扣金额");
         }
 
-        Integer stock = request.getStock() == null ? draft.getStock() : request.getStock();
-        if ("seckill".equals(draft.getDraftType()) && (stock == null || stock <= 0)) {
+        if ("seckill".equals(draftType) && (stock == null || stock <= 0)) {
             return Result.fail("秒杀券库存必须大于0");
         }
+        if ("seckill".equals(draftType) && stock != null && stock > MAX_SECKILL_STOCK) {
+            return Result.fail("秒杀券库存不能超过" + MAX_SECKILL_STOCK + "张");
+        }
 
-        LocalDateTime beginTime = request.getBeginTime() == null ? draft.getBeginTime() : request.getBeginTime();
-        LocalDateTime endTime = request.getEndTime() == null ? draft.getEndTime() : request.getEndTime();
         if (beginTime != null && endTime != null && !beginTime.isBefore(endTime)) {
             return Result.fail("活动开始时间必须早于结束时间");
+        }
+        if (beginTime != null && beginTime.isAfter(LocalDateTime.now().plusDays(MAX_BEGIN_TIME_AFTER_DAYS))) {
+            return Result.fail("活动开始时间不能超过一年后");
+        }
+        if (beginTime != null && endTime != null) {
+            int maxDays = "seckill".equals(draftType) ? MAX_SECKILL_DURATION_DAYS : MAX_VOUCHER_DURATION_DAYS;
+            if (beginTime.plusDays(maxDays).isBefore(endTime)) {
+                return Result.fail(("seckill".equals(draftType) ? "秒杀活动" : "普通代金券") + "有效期不能超过" + maxDays + "天");
+            }
+        }
+        if (confirmStage) {
+            LocalDateTime now = LocalDateTime.now();
+            if (beginTime == null || endTime == null) {
+                return Result.fail("活动开始和结束时间不能为空");
+            }
+            if (!endTime.isAfter(now)) {
+                return Result.fail("活动结束时间必须晚于当前时间");
+            }
+            if ("seckill".equals(draftType) && !beginTime.isAfter(now)) {
+                return Result.fail("秒杀券开始时间必须晚于当前时间");
+            }
         }
         return Result.ok();
     }
@@ -629,41 +739,18 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
      * 这里拦住金额倒挂、活动时间错误、秒杀库存缺失等问题，避免生成无法售卖的真实券。</p>
      */
     private Result validateDraftBeforeConfirm(AgentCampaignDraft draft) {
-        String draftType = draft.getDraftType();
-        if (!"voucher".equals(draftType) && !"seckill".equals(draftType)) {
-            return Result.fail("草稿类型只能是普通代金券或秒杀券");
-        }
-        if (draft.getTitle() == null || draft.getTitle().trim().isEmpty()) {
-            return Result.fail("活动标题不能为空");
-        }
-        if (draft.getPayValue() == null || draft.getPayValue() <= 0) {
-            return Result.fail("支付金额必须大于0");
-        }
-        if (draft.getActualValue() == null || draft.getActualValue() <= 0) {
-            return Result.fail("抵扣金额必须大于0");
-        }
-        if (draft.getPayValue() >= draft.getActualValue()) {
-            return Result.fail("支付金额必须小于抵扣金额");
-        }
-        if (draft.getBeginTime() == null || draft.getEndTime() == null) {
-            return Result.fail("活动开始和结束时间不能为空");
-        }
-        if (!draft.getBeginTime().isBefore(draft.getEndTime())) {
-            return Result.fail("活动开始时间必须早于结束时间");
-        }
-        LocalDateTime now = LocalDateTime.now();
-        if (!draft.getEndTime().isAfter(now)) {
-            return Result.fail("活动结束时间必须晚于当前时间");
-        }
-        if ("seckill".equals(draftType)) {
-            if (draft.getStock() == null || draft.getStock() <= 0) {
-                return Result.fail("秒杀券库存必须大于0");
-            }
-            if (!draft.getBeginTime().isAfter(now)) {
-                return Result.fail("秒杀券开始时间必须晚于当前时间");
-            }
-        }
-        return Result.ok();
+        return validateDraftBusinessFields(
+                draft.getDraftType(),
+                draft.getTitle(),
+                draft.getSubTitle(),
+                draft.getRules(),
+                draft.getPayValue(),
+                draft.getActualValue(),
+                draft.getStock(),
+                draft.getBeginTime(),
+                draft.getEndTime(),
+                true
+        );
     }
 
     @Override
@@ -1219,6 +1306,10 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
 
     private boolean isBlank(String value) {
         return value == null || value.trim().isEmpty();
+    }
+
+    private int textLength(String value) {
+        return value == null ? 0 : value.trim().length();
     }
 
     private String formatFen(Long value) {
