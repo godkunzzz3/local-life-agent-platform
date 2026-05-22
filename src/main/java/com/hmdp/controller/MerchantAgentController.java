@@ -47,6 +47,17 @@ public class MerchantAgentController {
     }
 
     /**
+     * 查询模型可直接调用的工具清单。
+     *
+     * <p>这个接口用于学习 Tool Calling 的权限边界：模型只能看到低风险只读工具，
+     * 写库工具和需要商家确认的工具仍由后端业务流程控制。</p>
+     */
+    @GetMapping("/tools/model-callable")
+    public Result queryModelCallableAgentTools() {
+        return merchantAgentFacadeService.queryModelCallableAgentTools();
+    }
+
+    /**
      * 新增 Agent 知识库文档。
      *
      * <p>这是 RAG 的地基接口：先把运营规则、行业案例、风控规则沉淀到 MySQL。

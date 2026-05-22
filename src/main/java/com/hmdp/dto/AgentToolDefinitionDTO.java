@@ -36,6 +36,11 @@ public class AgentToolDefinitionDTO {
     private String category;
 
     /**
+     * 工具类型：readonly 只读分析、draft 生成草稿、execute 执行真实业务动作。
+     */
+    private String toolType;
+
+    /**
      * 访问级别：read 表示只读分析，write 表示可能写入业务数据。
      */
     private String accessLevel;
@@ -49,6 +54,23 @@ public class AgentToolDefinitionDTO {
      * 是否会写入数据库。
      */
     private Boolean writeDatabase;
+
+    /**
+     * 是否允许暴露给模型直接选择。
+     *
+     * <p>只读工具通常可以暴露；写工具和高风险执行工具不应该直接暴露给模型。</p>
+     */
+    private Boolean modelCallable;
+
+    /**
+     * 执行策略：direct 直接执行、draft_only 只生成草稿、human_confirm 必须人工确认后执行。
+     */
+    private String executionPolicy;
+
+    /**
+     * 人工确认说明，用于前端和面试讲解当前工具为什么不能直接执行。
+     */
+    private String confirmReason;
 
     /**
      * 输入参数说明，当前先用文本描述，后续可以替换成 JSON Schema。

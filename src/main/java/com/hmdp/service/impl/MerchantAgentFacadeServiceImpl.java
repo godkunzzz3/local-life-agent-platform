@@ -146,6 +146,11 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     }
 
     @Override
+    public Result queryModelCallableAgentTools() {
+        return Result.ok(agentToolRegistry.listModelCallableDefinitions());
+    }
+
+    @Override
     @Transactional
     public Result generateOperationReport(Long shopId, String dateRange) {
         if (shopId == null) {

@@ -23,6 +23,15 @@ public interface IMerchantAgentFacadeService {
     Result queryAgentTools();
 
     /**
+     * 查询允许暴露给模型 Tool Calling 的工具清单。
+     *
+     * <p>该列表只包含低风险只读工具，不包含创建真实活动、退款、改订单状态等高风险动作。</p>
+     *
+     * @return 模型可调用工具定义列表
+     */
+    Result queryModelCallableAgentTools();
+
+    /**
      * 生成店铺运营报告。
      *
      * @param shopId 店铺ID

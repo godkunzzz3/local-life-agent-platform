@@ -26,7 +26,24 @@ public class AgentToolRegistry {
      * 查询全部工具定义。
      */
     public List<AgentToolDefinitionDTO> listDefinitions() {
-        return tools.stream()
+        return sortedDefinitions(tools);
+    }
+
+    /**
+     * 查询允许暴露给模型自主选择的工具。
+     *
+     * <p>这是 Tool Calling 的安全边界之一：不是所有后端工具都能交给模型。
+     * 只读工具可以直接暴露；写数据库、需要人工确认的工具必须留在业务流程里由后端控制。</p>
+     */
+    public List<AgentToolDefinitionDTO> listModelCallableDefinitions() {
+        List<AgentToolDescriptor> callableTools = tools.stream()
+                .filter(tool -> Boolean.TRUE.equals(tool.definition().getModelCallable()))
+                .collect(Collectors.toList());
+        return sortedDefinitions(callableTools);
+    }
+
+    private List<AgentToolDefinitionDTO> sortedDefinitions(List<AgentToolDescriptor> descriptors) {
+        return descriptors.stream()
                 .map(AgentToolDescriptor::definition)
                 .sorted(Comparator.comparing(AgentToolDefinitionDTO::getName))
                 .collect(Collectors.toList());
