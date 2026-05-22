@@ -28,6 +28,19 @@ import java.util.Map;
 @Component
 public class VoucherAgentTool implements AgentToolDescriptor {
 
+    /**
+     * 草稿标题最终会落到 tb_agent_campaign_draft.title，表字段长度为 128。
+     */
+    private static final int DRAFT_TITLE_MAX_LENGTH = 128;
+
+    /**
+     * 草稿副标题后续还会同步到 tb_voucher.sub_title。
+     *
+     * <p>数据库字段是 varchar(255/256)，这里主动控制在 120 字以内：
+     * 副标题只放一句短卖点，完整运营分析继续放 reason 字段，避免长文本写入短字段导致 Data truncation。</p>
+     */
+    private static final int DRAFT_SUB_TITLE_MAX_LENGTH = 120;
+
     @Resource
     private IVoucherService voucherService;
     @Resource
@@ -126,14 +139,14 @@ public class VoucherAgentTool implements AgentToolDescriptor {
                 .setSuggestionId(suggestion.getId())
                 .setShopId(suggestion.getShopId())
                 .setDraftType(draftType)
-                .setTitle(firstNotBlank(
+                .setTitle(limitText(firstNotBlank(
                         request == null ? null : request.getTitle(),
                         buildDefaultTitle(shop, draftType, request)
-                ))
-                .setSubTitle(firstNotBlank(
+                ), DRAFT_TITLE_MAX_LENGTH))
+                .setSubTitle(limitText(firstNotBlank(
                         request == null ? null : request.getSubTitle(),
                         buildDefaultSubTitle(draftType, request)
-                ))
+                ), DRAFT_SUB_TITLE_MAX_LENGTH))
                 .setPayValue(request != null && request.getPayValue() != null ? request.getPayValue() : defaultPayValue)
                 .setActualValue(request != null && request.getActualValue() != null ? request.getActualValue() : defaultActualValue)
                 .setStock(request != null && request.getStock() != null ? request.getStock() : defaultStock)
@@ -288,6 +301,23 @@ public class VoucherAgentTool implements AgentToolDescriptor {
         return first == null || first.trim().isEmpty() ? fallback : first.trim();
     }
 
+    /**
+     * 数据库短字段保护。
+     *
+     * <p>企业开发里不能完全信任前端或大模型返回的文本长度。只要字段最终要写入 varchar，
+     * Service/Tool 层就应该做长度兜底，避免一条长文本把整个事务打断。</p>
+     */
+    private String limitText(String text, int maxLength) {
+        if (text == null || maxLength <= 0) {
+            return text;
+        }
+        String trimmed = text.trim();
+        if (trimmed.length() <= maxLength) {
+            return trimmed;
+        }
+        return trimmed.substring(0, Math.max(0, maxLength - 1)) + "…";
+    }
+
     private long resolveDefaultPayValue(String draftType, long actualValue) {
         if ("seckill".equals(draftType)) {
             return Math.max(100L, Math.round(actualValue * 0.59));
@@ -310,9 +340,35 @@ public class VoucherAgentTool implements AgentToolDescriptor {
     private String buildDefaultSubTitle(String draftType, MerchantCampaignDraftRequest request) {
         String recommendationAction = request == null ? null : request.getRecommendationAction();
         if (recommendationAction != null && !recommendationAction.trim().isEmpty()) {
-            return recommendationAction.trim();
+            return buildShortSubTitleFromAction(draftType, recommendationAction);
         }
 
+        if ("seckill".equals(draftType)) {
+            return "Agent推荐小库存活动，适合短期验证转化";
+        }
+        return "Agent推荐低风险活动，适合持续拉新和复购";
+    }
+
+    /**
+     * 根据 Agent 动作生成短副标题。
+     *
+     * <p>Agent 的 action 可能是一整段运营方案，不适合直接作为优惠券副标题。
+     * 这里按业务关键词抽取成一句“用户能看懂的卖点”，长文本仍然保存在 reason 中用于审计和解释。</p>
+     */
+    private String buildShortSubTitleFromAction(String draftType, String recommendationAction) {
+        String action = recommendationAction.trim();
+        if (action.contains("周末")) {
+            return "周末限时可用，适合到店小聚";
+        }
+        if (action.contains("晚间") || action.contains("夜间")) {
+            return "晚间限时可用，到店出示券码核销";
+        }
+        if (action.contains("小库存") || action.contains("库存")) {
+            return "小库存限量活动，先到先得";
+        }
+        if (action.contains("复购") || action.contains("会员")) {
+            return "老客复购专享，到店核销使用";
+        }
         if ("seckill".equals(draftType)) {
             return "Agent推荐小库存活动，适合短期验证转化";
         }
