@@ -109,13 +109,20 @@ nginx -s reload
 
 ## 4. 最近一次开发进度
 
-最近完成的主线：Agent Tool Calling 注册表驱动化。
+最近完成的主线：Agent Tool Calling 注册表驱动化 + 操作审计增强。
 
 核心提交：
 
 ```text
 165e4f2 drive tool calling specs from registry
 ```
+
+本轮新增改动：
+
+- Tool Calling 成功后会记录 `tool_calling_model_call`，保存模型、Prompt、RAG、耗时和回复摘要。
+- Tool Calling 成功后会把每个工具调用拆成 `tool_call_execute` 审计日志。
+- 每条工具日志包含工具名、入参、执行结果、耗时、成功失败状态。
+- `targetType=session/tool/model` 都补充了中文展示名称，方便前端和面试演示。
 
 本次做了：
 
@@ -205,12 +212,11 @@ export DASHSCOPE_API_KEY='你的key'
 
 建议按这个顺序继续：
 
-1. 完善 Agent Action Log：记录 Tool Calling 每一步工具选择、参数、结果、耗时和成功状态。
-2. 优化 Tool Calling 执行链路可视化：前端更清晰展示模型选择工具、后端执行工具、RAG 召回、最终回复。
-3. 完善 RAG 评测持久化：把每次评测结果、Top1/TopK、失败原因、Rerank 结果保存并可视化。
-4. 完善商家端页面体验：建议卡片、草稿弹窗、确认流程和运营看板继续打磨。
-5. 整理简历和面试话术：围绕 Redis 高并发、Agent Tool Calling、RAG 和 Human-in-the-loop 讲项目亮点。
-6. 补自动化测试：对秒杀、草稿确认、Tool 注册表、RAG 召回阈值做单元或接口测试。
+1. 优化 Tool Calling 执行链路可视化：前端更清晰展示模型选择工具、后端执行工具、RAG 召回、最终回复。
+2. 完善 RAG 评测持久化：把每次评测结果、Top1/TopK、失败原因、Rerank 结果保存并可视化。
+3. 完善商家端页面体验：建议卡片、草稿弹窗、确认流程和运营看板继续打磨。
+4. 整理简历和面试话术：围绕 Redis 高并发、Agent Tool Calling、RAG 和 Human-in-the-loop 讲项目亮点。
+5. 补自动化测试：对秒杀、草稿确认、Tool 注册表、RAG 召回阈值做单元或接口测试。
 
 ## 9. 新 Codex 账号接手提示词
 
@@ -247,4 +253,3 @@ export DASHSCOPE_API_KEY='你的key'
 - RAG 如何结合平台规则和真实业务数据降低幻觉。
 - Prompt 版本和模型调用日志为什么重要。
 - Human-in-the-loop 如何保证 AI 系统安全落地。
-

@@ -954,6 +954,8 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
             toolCallingResult.put("scene", "tool_calling_chat");
 
             saveMessage(sessionId, shopId, "assistant", reply, null, null, toSimpleJson(toolCallingResult));
+            recordToolCallingModelAction(sessionId, shopId, merchantId, request, toolCallingResult);
+            recordToolCallingToolActions(sessionId, shopId, merchantId, toolCallingResult);
             recordAction(sessionId, shopId, merchantId, "tool_calling_chat", "session", sessionId, toolCallingResult);
             return Result.ok(toolCallingResult);
         } catch (Exception e) {
@@ -1679,6 +1681,99 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         agentActionLogService.save(actionLog);
     }
 
+    /**
+     * 记录 Tool Calling 模型调用概况。
+     *
+     * <p>业务意义：这一条日志回答“这一轮 Agent 对话用了哪个模型、哪个 Prompt 版本、
+     * 是否召回 RAG、最终耗时多少”。它是对整轮模型编排的审计，不替代单个工具执行日志。</p>
+     */
+    private void recordToolCallingModelAction(Long sessionId, Long shopId, Long merchantId,
+                                              MerchantAgentChatRequest request,
+                                              Map<String, Object> toolCallingResult) {
+        Map<String, Object> promptContext = asMap(toolCallingResult.get("promptContext"));
+        Map<String, Object> requestData = new LinkedHashMap<>();
+        requestData.put("message", request == null ? null : request.getMessage());
+        requestData.put("dateRange", request == null ? null : request.getDateRange());
+        requestData.put("intent", promptContext.get("intent"));
+        requestData.put("promptVersion", toolCallingResult.get("promptVersion"));
+        requestData.put("ragRetrievalMode", promptContext.get("ragRetrievalMode"));
+        requestData.put("ragHitCount", asList(promptContext.get("ragKnowledge")).size());
+        requestData.put("calledTools", toolCallingResult.get("calledTools"));
+
+        Map<String, Object> resultData = new LinkedHashMap<>();
+        resultData.put("provider", toolCallingResult.get("provider"));
+        resultData.put("modelName", toolCallingResult.get("modelName"));
+        resultData.put("promptVersion", toolCallingResult.get("promptVersion"));
+        resultData.put("toolCalling", toolCallingResult.get("toolCalling"));
+        resultData.put("costMillis", toolCallingResult.get("costMillis"));
+        resultData.put("reply", shortText(String.valueOf(toolCallingResult.get("reply")), 300));
+
+        AgentActionLog actionLog = new AgentActionLog()
+                .setId(nextAgentId())
+                .setSessionId(sessionId)
+                .setShopId(shopId)
+                .setOperatorId(merchantId)
+                .setOperatorType("agent")
+                .setActionType("tool_calling_model_call")
+                .setTargetType("model")
+                .setTargetId(sessionId)
+                .setRequestData(toSimpleJson(requestData))
+                .setResultData(toSimpleJson(resultData))
+                .setStatus(1);
+        agentActionLogService.save(actionLog);
+    }
+
+    /**
+     * 逐条记录模型选择并执行的只读工具。
+     *
+     * <p>业务意义：Tool Calling 的关键不是“模型回复了一句话”，而是模型基于问题选择了什么工具、
+     * 给工具传了什么参数、工具是否成功、耗时多少、返回了什么业务结果。逐条落库后，后续排查
+     * Agent 回复质量时，可以明确判断问题出在模型选错工具、工具参数错误，还是业务数据本身不足。</p>
+     */
+    private void recordToolCallingToolActions(Long sessionId, Long shopId, Long merchantId,
+                                              Map<String, Object> toolCallingResult) {
+        List<Object> toolCalls = asList(toolCallingResult.get("toolCalls"));
+        for (Object item : toolCalls) {
+            Map<String, Object> toolCall = asMap(item);
+            if (toolCall.isEmpty()) {
+                continue;
+            }
+            String toolName = String.valueOf(toolCall.get("toolName"));
+            boolean success = Boolean.TRUE.equals(toolCall.get("success"));
+
+            Map<String, Object> requestData = new LinkedHashMap<>();
+            requestData.put("toolName", toolName);
+            requestData.put("arguments", toolCall.get("arguments"));
+
+            Map<String, Object> resultData = new LinkedHashMap<>();
+            resultData.put("toolName", toolName);
+            resultData.put("success", success);
+            resultData.put("costMillis", toolCall.get("costMillis"));
+            resultData.put("result", toolCall.get("result"));
+
+            String errorMsg = null;
+            if (!success) {
+                Map<String, Object> result = asMap(toolCall.get("result"));
+                errorMsg = shortText(String.valueOf(result.getOrDefault("error", "工具执行失败")), 500);
+            }
+
+            AgentActionLog actionLog = new AgentActionLog()
+                    .setId(nextAgentId())
+                    .setSessionId(sessionId)
+                    .setShopId(shopId)
+                    .setOperatorId(merchantId)
+                    .setOperatorType("agent")
+                    .setActionType("tool_call_execute")
+                    .setTargetType("tool")
+                    .setTargetId(sessionId)
+                    .setRequestData(toSimpleJson(requestData))
+                    .setResultData(toSimpleJson(resultData))
+                    .setStatus(success ? 1 : 2)
+                    .setErrorMsg(errorMsg);
+            agentActionLogService.save(actionLog);
+        }
+    }
+
     private List<Map<String, Object>> buildActionRows(List<AgentActionLog> actionLogs) {
         if (actionLogs == null || actionLogs.isEmpty()) {
             return Collections.emptyList();
@@ -2106,6 +2201,12 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         if ("tool_calling_chat".equals(actionType)) {
             return "Tool Calling对话";
         }
+        if ("tool_calling_model_call".equals(actionType)) {
+            return "Tool Calling模型调用";
+        }
+        if ("tool_call_execute".equals(actionType)) {
+            return "执行Agent工具";
+        }
         if ("agent_chat".equals(actionType)) {
             return "Agent对话";
         }
@@ -2130,6 +2231,12 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         }
         if ("model".equals(targetType)) {
             return "大模型";
+        }
+        if ("tool".equals(targetType)) {
+            return "Agent工具";
+        }
+        if ("session".equals(targetType)) {
+            return "Agent会话";
         }
         return "未知目标";
     }
@@ -2168,6 +2275,29 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         } catch (JsonProcessingException e) {
             return data.toString();
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> asMap(Object value) {
+        if (value instanceof Map) {
+            return (Map<String, Object>) value;
+        }
+        return Collections.emptyMap();
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Object> asList(Object value) {
+        if (value instanceof List) {
+            return (List<Object>) value;
+        }
+        return Collections.emptyList();
+    }
+
+    private String shortText(String text, int maxLength) {
+        if (text == null || text.length() <= maxLength) {
+            return text;
+        }
+        return text.substring(0, maxLength) + "...";
     }
 
     private long nextAgentId() {
