@@ -57,6 +57,17 @@ public interface IMerchantAgentFacadeService {
     Result querySessionMessages(Long sessionId);
 
     /**
+     * 重命名 Agent 历史会话。
+     *
+     * <p>会话标题属于前端工作台的组织信息，允许商家修改；消息、建议和草稿内容不随标题变化。</p>
+     *
+     * @param sessionId 会话ID
+     * @param title 新标题
+     * @return 更新后的会话信息
+     */
+    Result renameSession(Long sessionId, String title);
+
+    /**
      * 删除某个 Agent 历史会话。
      *
      * <p>这里只删除会话和消息记录，不删除已经产生的建议、草稿和审计日志。

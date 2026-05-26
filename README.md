@@ -413,6 +413,7 @@ http://localhost:8080/merchant-agent.html
 - `POST /merchant-agent/shops/{shopId}/tool-chat` LangChain4j Tool Calling 对话
 - `GET /merchant-agent/shops/{shopId}/sessions` 查询会话
 - `GET /merchant-agent/sessions/{sessionId}/messages` 查询消息
+- `PUT /merchant-agent/sessions/{sessionId}` 重命名历史会话
 - `DELETE /merchant-agent/sessions/{sessionId}` 删除历史会话
 - `GET /merchant-agent/shops/{shopId}/suggestions` 查询建议
 - `DELETE /merchant-agent/suggestions/{suggestionId}` 删除智能行动建议

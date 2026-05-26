@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import javax.annotation.Resource;
+import java.util.Map;
 
 /**
  * 商家运营 Agent 控制器。
@@ -241,6 +242,18 @@ public class MerchantAgentController {
     @GetMapping("/sessions/{sessionId}/messages")
     public Result getSessionMessage(@PathVariable("sessionId") Long sessionId) {
         return merchantAgentFacadeService.querySessionMessages(sessionId);
+    }
+
+    /**
+     * 重命名历史会话。
+     *
+     * <p>学习点：重命名只改会话标题，不影响会话下的消息、建议、草稿和审计日志。</p>
+     */
+    @PutMapping("/sessions/{sessionId}")
+    public Result renameSession(@PathVariable("sessionId") Long sessionId,
+                                @RequestBody Map<String, String> request) {
+        String title = request == null ? null : request.get("title");
+        return merchantAgentFacadeService.renameSession(sessionId, title);
     }
 
     /**

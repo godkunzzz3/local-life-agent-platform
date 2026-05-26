@@ -82,6 +82,11 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     private static final int DRAFT_STATUS_REJECTED = 3;
 
     /**
+     * 会话标题只用于工作台展示，控制长度可以避免侧边栏布局被长文本撑坏。
+     */
+    private static final int SESSION_TITLE_MAX_LENGTH = 40;
+
+    /**
      * 草稿标题对应 tb_agent_campaign_draft.title，数据库长度为 128。
      */
     private static final int DRAFT_TITLE_MAX_LENGTH = 128;
@@ -309,6 +314,44 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
             row.put("createTime", message.getCreateTime());
             result.add(row);
         }
+        return Result.ok(result);
+    }
+
+    @Override
+    @Transactional
+    public Result renameSession(Long sessionId, String title) {
+        if (sessionId == null) {
+            return Result.fail("会话id不能为空");
+        }
+        String newTitle = title == null ? "" : title.trim();
+        if (newTitle.isEmpty()) {
+            return Result.fail("会话标题不能为空");
+        }
+        if (newTitle.length() > SESSION_TITLE_MAX_LENGTH) {
+            return Result.fail("会话标题不能超过" + SESSION_TITLE_MAX_LENGTH + "个字符");
+        }
+        AgentSession session = agentSessionService.getById(sessionId);
+        if (session == null) {
+            return Result.fail("会话不存在");
+        }
+        if (!merchantService.hasCurrentUserShopPermission(session.getShopId())) {
+            return Result.fail("无权修改该会话");
+        }
+
+        agentSessionService.updateById(new AgentSession()
+                .setId(sessionId)
+                .setTitle(newTitle)
+                .setUpdateTime(LocalDateTime.now()));
+        session.setTitle(newTitle);
+        session.setUpdateTime(LocalDateTime.now());
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("sessionId", String.valueOf(sessionId));
+        result.put("shopId", session.getShopId());
+        result.put("title", newTitle);
+        result.put("message", "历史会话已重命名");
+        recordAction(sessionId, session.getShopId(), currentMerchantId(),
+                "rename_agent_session", "session", sessionId, result);
         return Result.ok(result);
     }
 
@@ -2319,6 +2362,9 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         }
         if ("create_campaign_draft".equals(actionType)) {
             return "生成活动草稿";
+        }
+        if ("rename_agent_session".equals(actionType)) {
+            return "重命名历史会话";
         }
         if ("delete_agent_session".equals(actionType)) {
             return "删除历史会话";
