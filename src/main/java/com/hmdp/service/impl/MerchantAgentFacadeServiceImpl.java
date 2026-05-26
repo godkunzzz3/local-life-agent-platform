@@ -1,5 +1,6 @@
 package com.hmdp.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.hmdp.agent.MerchantAgentModelClient;
 import com.hmdp.agent.MerchantAgentPromptTemplateService;
 import com.hmdp.agent.MerchantAgentToolCallingService;
@@ -64,6 +65,21 @@ import static com.hmdp.utils.RedisConstants.SECKILL_STOCK_KEY;
  */
 @Service
 public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeService {
+
+    /**
+     * 活动草稿状态：待商家确认。
+     */
+    private static final int DRAFT_STATUS_PENDING = 1;
+
+    /**
+     * 活动草稿状态：已经确认并创建真实优惠券。
+     */
+    private static final int DRAFT_STATUS_CREATED = 2;
+
+    /**
+     * 活动草稿状态：商家已拒绝。
+     */
+    private static final int DRAFT_STATUS_REJECTED = 3;
 
     /**
      * 草稿标题对应 tb_agent_campaign_draft.title，数据库长度为 128。
@@ -297,6 +313,38 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     }
 
     @Override
+    @Transactional
+    public Result deleteSession(Long sessionId) {
+        if (sessionId == null) {
+            return Result.fail("会话id不能为空");
+        }
+        AgentSession session = agentSessionService.getById(sessionId);
+        if (session == null) {
+            return Result.fail("会话不存在或已删除");
+        }
+        if (!merchantService.hasCurrentUserShopPermission(session.getShopId())) {
+            return Result.fail("无权删除该会话");
+        }
+
+        long deletedMessages = agentMessageService.count(
+                new QueryWrapper<AgentMessage>().eq("session_id", sessionId));
+
+        // 学习重点：会话属于“展示和上下文记录”，删除时只清理会话和消息；
+        // 建议、草稿、真实优惠券和审计日志是业务链路的一部分，不能跟着级联删除。
+        agentMessageService.remove(new QueryWrapper<AgentMessage>().eq("session_id", sessionId));
+        agentSessionService.removeById(sessionId);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("sessionId", String.valueOf(sessionId));
+        result.put("shopId", session.getShopId());
+        result.put("deletedMessages", deletedMessages);
+        result.put("message", "历史会话已删除");
+        recordAction(sessionId, session.getShopId(), currentMerchantId(),
+                "delete_agent_session", "session", sessionId, result);
+        return Result.ok(result);
+    }
+
+    @Override
     public Result queryShopSuggestions(Long shopId) {
         if (shopId == null) {
             return Result.fail("店铺id不能为空");
@@ -335,6 +383,36 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
             row.put("updateTime", suggestion.getUpdateTime());
             result.add(row);
         }
+        return Result.ok(result);
+    }
+
+    @Override
+    @Transactional
+    public Result deleteSuggestion(Long suggestionId) {
+        if (suggestionId == null) {
+            return Result.fail("建议id不能为空");
+        }
+        AgentSuggestion suggestion = agentSuggestionService.getById(suggestionId);
+        if (suggestion == null) {
+            return Result.fail("智能行动不存在或已删除");
+        }
+        if (!merchantService.hasCurrentUserShopPermission(suggestion.getShopId())) {
+            return Result.fail("无权删除该智能行动");
+        }
+
+        long relatedDrafts = campaignDraftService.count(
+                new QueryWrapper<AgentCampaignDraft>().eq("suggestion_id", suggestionId));
+        agentSuggestionService.removeById(suggestionId);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("suggestionId", String.valueOf(suggestionId));
+        result.put("shopId", suggestion.getShopId());
+        result.put("relatedDrafts", relatedDrafts);
+        result.put("message", relatedDrafts > 0
+                ? "智能行动已删除，已生成的活动草稿仍保留"
+                : "智能行动已删除");
+        recordAction(suggestion.getSessionId(), suggestion.getShopId(), currentMerchantId(),
+                "delete_agent_suggestion", "suggestion", suggestionId, result);
         return Result.ok(result);
     }
 
@@ -403,6 +481,41 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     }
 
     @Override
+    @Transactional
+    public Result clearShopDrafts(Long shopId) {
+        if (shopId == null) {
+            return Result.fail("店铺id不能为空");
+        }
+        if (shopAgentTool.getShop(shopId) == null) {
+            return Result.fail("店铺不存在");
+        }
+        if (!merchantService.hasCurrentUserShopPermission(shopId)) {
+            return Result.fail("无权管理该店铺");
+        }
+
+        List<AgentCampaignDraft> drafts = campaignDraftService.query()
+                .eq("shop_id", shopId)
+                .list();
+        List<Long> deletableIds = drafts.stream()
+                .filter(draft -> draft.getStatus() == null || draft.getStatus() != DRAFT_STATUS_CREATED)
+                .map(AgentCampaignDraft::getId)
+                .collect(Collectors.toList());
+        long skippedCreated = drafts.size() - deletableIds.size();
+        if (!deletableIds.isEmpty()) {
+            campaignDraftService.removeByIds(deletableIds);
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("shopId", shopId);
+        result.put("deletedCount", deletableIds.size());
+        result.put("skippedCreatedCount", skippedCreated);
+        result.put("message", "已清空未创建真实活动的草稿");
+        recordAction(null, shopId, currentMerchantId(),
+                "clear_campaign_drafts", "draft", null, result);
+        return Result.ok(result);
+    }
+
+    @Override
     public Result queryCampaignDraftDetail(Long draftId) {
         if (draftId == null) {
             return Result.fail("草稿id不能为空");
@@ -416,6 +529,36 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         }
 
         return Result.ok(voucherAgentTool.draftToMap(draft));
+    }
+
+    @Override
+    @Transactional
+    public Result deleteCampaignDraft(Long draftId) {
+        if (draftId == null) {
+            return Result.fail("草稿id不能为空");
+        }
+        AgentCampaignDraft draft = campaignDraftService.getById(draftId);
+        if (draft == null) {
+            return Result.fail("活动草稿不存在或已删除");
+        }
+        if (!merchantService.hasCurrentUserShopPermission(draft.getShopId())) {
+            return Result.fail("无权删除该草稿");
+        }
+        if (draft.getStatus() != null && draft.getStatus() == DRAFT_STATUS_CREATED) {
+            return Result.fail("该草稿已创建真实优惠券，不能删除审计记录");
+        }
+
+        AgentSuggestion suggestion = agentSuggestionService.getById(draft.getSuggestionId());
+        campaignDraftService.removeById(draftId);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("draftId", String.valueOf(draftId));
+        result.put("shopId", draft.getShopId());
+        result.put("status", draft.getStatus());
+        result.put("message", "活动草稿已删除");
+        recordAction(suggestion == null ? null : suggestion.getSessionId(), draft.getShopId(), currentMerchantId(),
+                "delete_campaign_draft", "draft", draftId, result);
+        return Result.ok(result);
     }
 
     @Override
@@ -2176,6 +2319,18 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         }
         if ("create_campaign_draft".equals(actionType)) {
             return "生成活动草稿";
+        }
+        if ("delete_agent_session".equals(actionType)) {
+            return "删除历史会话";
+        }
+        if ("delete_agent_suggestion".equals(actionType)) {
+            return "删除智能行动";
+        }
+        if ("delete_campaign_draft".equals(actionType)) {
+            return "删除活动草稿";
+        }
+        if ("clear_campaign_drafts".equals(actionType)) {
+            return "清空活动草稿";
         }
         if ("update_campaign_draft".equals(actionType)) {
             return "修改活动草稿";

@@ -244,12 +244,34 @@ public class MerchantAgentController {
     }
 
     /**
+     * 删除历史会话。
+     *
+     * <p>用于商家工作台清理左侧历史列表。后端只删除会话和消息，不删除建议、
+     * 草稿和审计日志，避免清理 UI 时破坏业务追踪链路。</p>
+     */
+    @DeleteMapping("/sessions/{sessionId}")
+    public Result deleteSession(@PathVariable("sessionId") Long sessionId) {
+        return merchantAgentFacadeService.deleteSession(sessionId);
+    }
+
+    /**
      * 查询店铺 Agent 建议
      */
     @GetMapping("/shops/{shopId}/suggestions")
     public Result getShopAgentSuggestion(@PathVariable("shopId") Long shopId) {
         return merchantAgentFacadeService.queryShopSuggestions(shopId);
     }
+
+    /**
+     * 删除单条智能行动建议。
+     *
+     * <p>该接口只删除建议卡片，不会级联删除活动草稿或真实业务数据。</p>
+     */
+    @DeleteMapping("/suggestions/{suggestionId}")
+    public Result deleteSuggestion(@PathVariable("suggestionId") Long suggestionId) {
+        return merchantAgentFacadeService.deleteSuggestion(suggestionId);
+    }
+
     /**
      * 生成优惠券、秒杀券草稿
      */
@@ -278,12 +300,31 @@ public class MerchantAgentController {
     }
 
     /**
+     * 一键清空店铺未创建的活动草稿。
+     *
+     * <p>已创建真实优惠券的草稿会被跳过，因为它属于 Agent 操作审计链路。</p>
+     */
+    @DeleteMapping("/shops/{shopId}/drafts")
+    public Result clearShopDrafts(@PathVariable("shopId") Long shopId) {
+        return merchantAgentFacadeService.clearShopDrafts(shopId);
+    }
+
+    /**
      * 查询单个活动草稿详情。
      */
     @GetMapping("/drafts/{draftId}")
     public Result queryCampaignDraftDetail(@PathVariable("draftId") Long draftId) {
         return merchantAgentFacadeService.queryCampaignDraftDetail(draftId);
     }
+
+    /**
+     * 删除单个未创建真实活动的草稿。
+     */
+    @DeleteMapping("/drafts/{draftId}")
+    public Result deleteCampaignDraft(@PathVariable("draftId") Long draftId) {
+        return merchantAgentFacadeService.deleteCampaignDraft(draftId);
+    }
+
     /**
      * 商家觉得 Agent 生成的草稿不合适，可以拒绝。
      *

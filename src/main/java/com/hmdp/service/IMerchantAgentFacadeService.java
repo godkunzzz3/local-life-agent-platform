@@ -57,12 +57,33 @@ public interface IMerchantAgentFacadeService {
     Result querySessionMessages(Long sessionId);
 
     /**
+     * 删除某个 Agent 历史会话。
+     *
+     * <p>这里只删除会话和消息记录，不删除已经产生的建议、草稿和审计日志。
+     * 这样既能减少前端历史列表冗余，又不会破坏 Agent 执行动作的追踪链路。</p>
+     *
+     * @param sessionId 会话ID
+     * @return 删除结果
+     */
+    Result deleteSession(Long sessionId);
+
+    /**
      * 查询某个店铺的 Agent 建议列表。
      *
      * @param shopId 店铺ID
      * @return 建议卡片列表
      */
     Result queryShopSuggestions(Long shopId);
+
+    /**
+     * 删除单条 Agent 智能行动建议。
+     *
+     * <p>删除建议只影响商家工作台的建议卡片展示，不会删除已经生成的草稿或真实优惠券。</p>
+     *
+     * @param suggestionId 建议ID
+     * @return 删除结果
+     */
+    Result deleteSuggestion(Long suggestionId);
 
     /**
      * 根据 Agent 建议生成活动草稿。
@@ -82,12 +103,30 @@ public interface IMerchantAgentFacadeService {
     Result queryShopDrafts(Long shopId);
 
     /**
+     * 清空某个店铺下未创建真实活动的草稿。
+     *
+     * <p>状态为“已创建”的草稿已经关联真实优惠券，必须保留审计链路，因此批量清理时会跳过。</p>
+     *
+     * @param shopId 店铺ID
+     * @return 清理结果
+     */
+    Result clearShopDrafts(Long shopId);
+
+    /**
      * 查询活动草稿详情。
      *
      * @param draftId 草稿ID
      * @return 草稿详情
      */
     Result queryCampaignDraftDetail(Long draftId);
+
+    /**
+     * 删除单个未创建真实活动的草稿。
+     *
+     * @param draftId 草稿ID
+     * @return 删除结果
+     */
+    Result deleteCampaignDraft(Long draftId);
 
     /**
      * 商家拒绝活动草稿。

@@ -413,9 +413,13 @@ http://localhost:8080/merchant-agent.html
 - `POST /merchant-agent/shops/{shopId}/tool-chat` LangChain4j Tool Calling 对话
 - `GET /merchant-agent/shops/{shopId}/sessions` 查询会话
 - `GET /merchant-agent/sessions/{sessionId}/messages` 查询消息
+- `DELETE /merchant-agent/sessions/{sessionId}` 删除历史会话
 - `GET /merchant-agent/shops/{shopId}/suggestions` 查询建议
+- `DELETE /merchant-agent/suggestions/{suggestionId}` 删除智能行动建议
 - `POST /merchant-agent/suggestions/{suggestionId}/drafts` 生成活动草稿
 - `POST /merchant-agent/drafts/{draftId}/confirm` 确认创建活动
+- `DELETE /merchant-agent/drafts/{draftId}` 删除未创建的活动草稿
+- `DELETE /merchant-agent/shops/{shopId}/drafts` 一键清空未创建的活动草稿
 - `GET /merchant-agent/knowledge-docs` 查询知识库
 - `POST /merchant-agent/knowledge-docs` 新增知识
 - `POST /merchant-agent/knowledge-docs/{docId}/vectorize` 单条向量化
