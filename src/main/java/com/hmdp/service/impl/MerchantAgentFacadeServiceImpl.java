@@ -3,6 +3,7 @@ package com.hmdp.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.hmdp.agent.MerchantAgentModelClient;
 import com.hmdp.agent.MerchantAgentPromptTemplateService;
+import com.hmdp.agent.MerchantAgentRulePolicyService;
 import com.hmdp.agent.MerchantAgentToolCallingService;
 import com.hmdp.dto.*;
 import com.hmdp.entity.AgentActionLog;
@@ -24,6 +25,7 @@ import com.hmdp.service.IMerchantAgentMessageService;
 import com.hmdp.service.IMerchantAgentSessionService;
 import com.hmdp.service.IMerchantAgentSuggestionService;
 import com.hmdp.service.IMerchantAgentKnowledgeDocService;
+import com.hmdp.service.AgentWorkflowRecorderService;
 import com.hmdp.service.IMerchantCampaignDraftService;
 import com.hmdp.service.IMerchantService;
 import com.hmdp.tool.OrderAgentTool;
@@ -160,6 +162,10 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     private MerchantAgentPromptTemplateService promptTemplateService;
     @Resource
     private MerchantAgentToolCallingService toolCallingService;
+    @Resource
+    private AgentWorkflowRecorderService agentWorkflowRecorderService;
+    @Resource
+    private MerchantAgentRulePolicyService rulePolicyService;
 
     @Override
     public Result queryAgentTools() {
@@ -1040,69 +1046,99 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
             return Result.fail("会话不存在或不属于当前店铺");
         }
         Long sessionId = session.getId();
+        Long workflowRunId = agentWorkflowRecorderService.startRun(sessionId, shopId, merchantId,
+                "agent_chat", "merchant_message", userMessage, intent);
+        int workflowStepOrder = 1;
+        workflowStepOrder = recordWorkflowFlowStep(workflowRunId, sessionId, shopId, workflowStepOrder,
+                flowTrace.get(0), "RECEIVE_MESSAGE", request, null);
+        workflowStepOrder = recordWorkflowFlowStep(workflowRunId, sessionId, shopId, workflowStepOrder,
+                flowTrace.get(1), "RAG_RETRIEVE", userMessage, ragKnowledge);
+        workflowStepOrder = recordWorkflowFlowStep(workflowRunId, sessionId, shopId, workflowStepOrder,
+                flowTrace.get(2), "INTENT_RESOLVE", userMessage, intent);
+        workflowStepOrder = recordWorkflowFlowStep(workflowRunId, sessionId, shopId, workflowStepOrder,
+                flowTrace.get(3), "TOOL_SELECT", intent, toolName);
 
         // 对话链路先保存用户消息，再保存工具结果和助手回复，后续接大模型时可作为上下文记忆。
-        saveMessage(sessionId, shopId, "user", userMessage, null, null, null);
-        Map<String, Object> toolArgs = buildChatToolArgs(shopId, intent, range);
-        Map<String, Object> toolResult = buildChatToolResult(context, intent, range);
-        AgentToolExecutionResultDTO toolExecution = agentToolExecutor.wrapResult(
-                toolName, toolArgs, toolResult);
-        flowTrace.add(buildFlowStep("execute_tool", "执行工具并读取数据",
-                Boolean.TRUE.equals(toolExecution.getSuccess()) ? "success" : "failed",
-                Boolean.TRUE.equals(toolExecution.getSuccess())
-                        ? "工具执行成功，已生成结构化工具结果"
-                        : toolExecution.getErrorMsg(),
-                toolExecution.getToolName(), toolExecution.getCostMillis()));
-        saveMessage(sessionId, shopId, "tool", "已调用 " + toolExecution.getToolName(), toolExecution.getToolName(),
-                toolExecution.getToolArgs(), toSimpleJson(toolExecution));
+        try {
+            saveMessage(sessionId, shopId, "user", userMessage, null, null, null);
+            Map<String, Object> toolArgs = buildChatToolArgs(shopId, intent, range);
+            Map<String, Object> toolResult = buildChatToolResult(context, intent, range);
+            AgentToolExecutionResultDTO toolExecution = agentToolExecutor.wrapResult(
+                    toolName, toolArgs, toolResult);
+            AgentFlowStepDTO toolStep = buildFlowStep("execute_tool", "执行工具并读取数据",
+                    Boolean.TRUE.equals(toolExecution.getSuccess()) ? "success" : "failed",
+                    Boolean.TRUE.equals(toolExecution.getSuccess())
+                            ? "工具执行成功，已生成结构化工具结果"
+                            : toolExecution.getErrorMsg(),
+                    toolExecution.getToolName(), toolExecution.getCostMillis());
+            flowTrace.add(toolStep);
+            workflowStepOrder = recordWorkflowFlowStep(workflowRunId, sessionId, shopId, workflowStepOrder,
+                    toolStep, "TOOL_EXECUTE", toolArgs, toolResult);
+            saveMessage(sessionId, shopId, "tool", "已调用 " + toolExecution.getToolName(), toolExecution.getToolName(),
+                    toolExecution.getToolArgs(), toSimpleJson(toolExecution));
 
-        AgentRecommendationDTO recommendation = selectRecommendationByIntent(context.getRecommendations(), intent);
-        Long suggestionId = null;
-        AgentCampaignDraft draft = null;
-        if (shouldSaveSuggestion(intent)) {
-            suggestionId = saveChatSuggestion(sessionId, shopId, intent, recommendation, context);
-            flowTrace.add(buildFlowStep("create_suggestion", "生成运营建议", "success",
-                    "已生成可追踪的 Agent 建议：" + recommendation.getTitle(), null, null));
-        } else {
-            flowTrace.add(buildFlowStep("create_suggestion", "生成运营建议", "skipped",
-                    "订单分析类问题只返回分析结果，不额外创建建议卡片", null, null));
+            AgentRecommendationDTO recommendation = selectRecommendationByIntent(context.getRecommendations(), intent);
+            Long suggestionId = null;
+            AgentCampaignDraft draft = null;
+            if (shouldSaveSuggestion(intent)) {
+                suggestionId = saveChatSuggestion(sessionId, shopId, intent, recommendation, context);
+                flowTrace.add(buildFlowStep("create_suggestion", "生成运营建议", "success",
+                        "已生成可追踪的 Agent 建议：" + recommendation.getTitle(), null, null));
+            } else {
+                flowTrace.add(buildFlowStep("create_suggestion", "生成运营建议", "skipped",
+                        "订单分析类问题只返回分析结果，不额外创建建议卡片", null, null));
+            }
+            AgentFlowStepDTO draftStep;
+            if (suggestionId != null && shouldAutoCreateDraft(userMessage, request, intent)) {
+                draft = createDraftFromChatSuggestion(suggestionId, recommendation, shop);
+                draftStep = buildFlowStep("create_draft", "生成活动草稿", "success",
+                        "已生成待商家确认的活动草稿", "voucher_campaign_tool", null);
+            } else {
+                draftStep = buildFlowStep("create_draft", "生成活动草稿", "skipped",
+                        "本轮未触发自动生成草稿，真实活动仍需商家确认", "voucher_campaign_tool", null);
+            }
+            flowTrace.add(draftStep);
+            workflowStepOrder = recordWorkflowFlowStep(workflowRunId, sessionId, shopId, workflowStepOrder,
+                    draftStep, "DRAFT_GENERATE", suggestionId, draft == null ? null : voucherAgentTool.draftToMap(draft));
+
+            AgentModelResponseDTO modelResponse = merchantAgentModelClient.generateReply(new AgentModelRequestDTO()
+                    .setPromptContext(promptContext)
+                    .setToolExecution(toolExecution)
+                    .setRecommendation(recommendation)
+                    .setDraft(draft));
+            recordModelCall(sessionId, shopId, merchantId, promptContext, toolExecution, modelResponse);
+            workflowStepOrder = recordWorkflowStep(workflowRunId, sessionId, shopId, workflowStepOrder,
+                    "model_call", "模型调用", "MODEL_CALL", null, "success",
+                    promptContext, modelResponse, "已完成模型回复生成", modelResponse.getCostMillis());
+            String reply = modelResponse.getReply();
+            AgentFlowStepDTO replyStep = buildFlowStep("generate_reply", "生成回复", "success",
+                    "已通过模型客户端 " + modelResponse.getProvider() + " 生成回复", null, null);
+            flowTrace.add(replyStep);
+            recordWorkflowFlowStep(workflowRunId, sessionId, shopId, workflowStepOrder,
+                    replyStep, "FINAL_ANSWER", null, reply);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("sessionId", String.valueOf(sessionId));
+            result.put("shopId", shopId);
+            result.put("intent", intent);
+            result.put("intentName", resolveChatIntentName(intent));
+            result.put("reply", reply);
+            result.put("suggestionId", suggestionId == null ? null : String.valueOf(suggestionId));
+            result.put("draftId", draft == null ? null : String.valueOf(draft.getId()));
+            result.put("draft", draft == null ? null : voucherAgentTool.draftToMap(draft));
+            result.put("toolResult", toolResult);
+            result.put("toolExecution", toolExecution);
+            result.put("promptContext", promptContext);
+            result.put("flowTrace", flowTrace);
+            result.put("modelResponse", modelResponse);
+
+            saveMessage(sessionId, shopId, "assistant", reply, null, null, toSimpleJson(result));
+            recordAction(sessionId, shopId, merchantId, "agent_chat", "session", sessionId, result);
+            agentWorkflowRecorderService.finishRun(workflowRunId, reply);
+            return Result.ok(result);
+        } catch (RuntimeException e) {
+            agentWorkflowRecorderService.failRun(workflowRunId, e.getMessage());
+            throw e;
         }
-        if (suggestionId != null && shouldAutoCreateDraft(userMessage, request, intent)) {
-            draft = createDraftFromChatSuggestion(suggestionId, recommendation, shop);
-            flowTrace.add(buildFlowStep("create_draft", "生成活动草稿", "success",
-                    "已生成待商家确认的活动草稿", "voucher_campaign_tool", null));
-        } else {
-            flowTrace.add(buildFlowStep("create_draft", "生成活动草稿", "skipped",
-                    "本轮未触发自动生成草稿，真实活动仍需商家确认", "voucher_campaign_tool", null));
-        }
-
-        AgentModelResponseDTO modelResponse = merchantAgentModelClient.generateReply(new AgentModelRequestDTO()
-                .setPromptContext(promptContext)
-                .setToolExecution(toolExecution)
-                .setRecommendation(recommendation)
-                .setDraft(draft));
-        recordModelCall(sessionId, shopId, merchantId, promptContext, toolExecution, modelResponse);
-        String reply = modelResponse.getReply();
-        flowTrace.add(buildFlowStep("generate_reply", "生成回复", "success",
-                "已通过模型客户端 " + modelResponse.getProvider() + " 生成回复", null, null));
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("sessionId", String.valueOf(sessionId));
-        result.put("shopId", shopId);
-        result.put("intent", intent);
-        result.put("intentName", resolveChatIntentName(intent));
-        result.put("reply", reply);
-        result.put("suggestionId", suggestionId == null ? null : String.valueOf(suggestionId));
-        result.put("draftId", draft == null ? null : String.valueOf(draft.getId()));
-        result.put("draft", draft == null ? null : voucherAgentTool.draftToMap(draft));
-        result.put("toolResult", toolResult);
-        result.put("toolExecution", toolExecution);
-        result.put("promptContext", promptContext);
-        result.put("flowTrace", flowTrace);
-        result.put("modelResponse", modelResponse);
-
-        saveMessage(sessionId, shopId, "assistant", reply, null, null, toSimpleJson(result));
-        recordAction(sessionId, shopId, merchantId, "agent_chat", "session", sessionId, result);
-        return Result.ok(result);
     }
 
     @Override
@@ -1131,6 +1167,11 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         Long sessionId = session.getId();
         List<AgentMessage> historyMessages = loadRecentNaturalMessages(sessionId);
         saveMessage(sessionId, shopId, "user", userMessage, null, null, null);
+        Long workflowRunId = agentWorkflowRecorderService.startRun(sessionId, shopId, merchantId,
+                "tool_calling_chat", "merchant_message", userMessage, "tool_calling_chat");
+        int workflowStepOrder = recordWorkflowStep(workflowRunId, sessionId, shopId, 1,
+                "tool_calling_start", "开始 Tool Calling", "TOOL_CALLING_START", null, "success",
+                request, null, "已开始 Tool Calling 对话", null);
 
         try {
             Map<String, Object> toolCallingResult = toolCallingService.chat(shop, request, historyMessages);
@@ -1138,17 +1179,21 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
             toolCallingResult.put("sessionId", String.valueOf(sessionId));
             toolCallingResult.put("shopId", shopId);
             toolCallingResult.put("scene", "tool_calling_chat");
+            workflowStepOrder = recordToolCallingWorkflowSteps(workflowRunId, sessionId, shopId,
+                    workflowStepOrder, toolCallingResult);
 
             saveMessage(sessionId, shopId, "assistant", reply, null, null, toSimpleJson(toolCallingResult));
             recordToolCallingModelAction(sessionId, shopId, merchantId, request, toolCallingResult);
             recordToolCallingToolActions(sessionId, shopId, merchantId, toolCallingResult);
             recordAction(sessionId, shopId, merchantId, "tool_calling_chat", "session", sessionId, toolCallingResult);
+            agentWorkflowRecorderService.finishRun(workflowRunId, reply);
             return Result.ok(toolCallingResult);
         } catch (Exception e) {
             Map<String, Object> errorResult = new LinkedHashMap<>();
             errorResult.put("message", request.getMessage());
             errorResult.put("error", e.getMessage());
             recordFailedAction(sessionId, shopId, merchantId, "tool_calling_chat", "session", sessionId, errorResult, e.getMessage());
+            agentWorkflowRecorderService.failRun(workflowRunId, e.getMessage());
             return Result.fail("Tool Calling 调用失败：" + e.getMessage());
         }
     }
@@ -1190,6 +1235,111 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
                 .setDetail(detail)
                 .setToolName(toolName)
                 .setCostMillis(costMillis);
+    }
+
+    private int recordWorkflowFlowStep(Long runId, Long sessionId, Long shopId, int stepOrder,
+                                       AgentFlowStepDTO step, String nodeType, Object input, Object output) {
+        if (step == null) {
+            return stepOrder;
+        }
+        return recordWorkflowStep(runId, sessionId, shopId, stepOrder,
+                step.getStepCode(), step.getStepName(), nodeType, step.getToolName(), step.getStatus(),
+                input, output, step.getDetail(), step.getCostMillis());
+    }
+
+    private int recordWorkflowStep(Long runId, Long sessionId, Long shopId, int stepOrder,
+                                   String stepCode, String stepName, String nodeType, String toolName,
+                                   String status, Object input, Object output, String detail, Long costMillis) {
+        agentWorkflowRecorderService.recordStep(runId, sessionId, shopId, stepOrder,
+                stepCode, stepName, nodeType, toolName, status, input, output, detail, null, costMillis);
+        return stepOrder + 1;
+    }
+
+    private int recordToolCallingWorkflowSteps(Long runId, Long sessionId, Long shopId, int stepOrder,
+                                               Map<String, Object> toolCallingResult) {
+        List<Object> flowSteps = asList(toolCallingResult.get("flowTrace"));
+        Map<String, Object> promptContext = asMap(toolCallingResult.get("promptContext"));
+        Object ragKnowledge = promptContext.get("ragKnowledge");
+        stepOrder = recordWorkflowStep(runId, sessionId, shopId, stepOrder,
+                "retrieve_knowledge", "检索运营知识", "RAG_RETRIEVE", "knowledge_retrieval", "success",
+                promptContext.get("userMessage"), ragKnowledge,
+                resolveFlowDetail(flowSteps, "retrieve_knowledge", "已完成 Tool Calling RAG 检索"), null);
+        stepOrder = recordWorkflowStep(runId, sessionId, shopId, stepOrder,
+                "tool_spec_build", "构建工具白名单", "TOOL_SPEC_BUILD", null, "success",
+                null, toolCallingResult.get("calledTools"), "已基于 AgentToolRegistry 构建模型可调用只读工具列表", null);
+        stepOrder = recordWorkflowStep(runId, sessionId, shopId, stepOrder,
+                "select_tool", "模型选择工具", "MODEL_TOOL_DECISION", null,
+                resolveFlowStatus(flowSteps, "select_tool", "success"),
+                promptContext, toolCallingResult.get("calledTools"),
+                resolveFlowDetail(flowSteps, "select_tool", "模型已完成工具选择"), null);
+
+        List<Object> toolCalls = asList(toolCallingResult.get("toolCalls"));
+        for (Object item : toolCalls) {
+            Map<String, Object> toolCall = asMap(item);
+            if (toolCall.isEmpty()) {
+                continue;
+            }
+            boolean success = Boolean.TRUE.equals(toolCall.get("success"));
+            stepOrder = recordWorkflowStep(runId, sessionId, shopId, stepOrder,
+                    "execute_tool", "执行只读工具", "READONLY_TOOL_EXECUTE",
+                    String.valueOf(toolCall.get("toolName")),
+                    success ? "success" : "failed",
+                    toolCall.get("arguments"), toolCall.get("result"),
+                    success ? "已执行只读工具" : "只读工具执行失败",
+                    longValue(toolCall.get("costMillis")));
+        }
+        recordWorkflowStep(runId, sessionId, shopId, stepOrder,
+                "generate_reply", "生成最终回复", "FINAL_ANSWER", null, "success",
+                toolCallingResult.get("calledTools"), toolCallingResult.get("reply"),
+                resolveFlowDetail(flowSteps, "generate_reply", "已生成最终回复"),
+                longValue(toolCallingResult.get("costMillis")));
+        return stepOrder + 1;
+    }
+
+    private String resolveFlowDetail(List<Object> flowSteps, String stepCode, String defaultValue) {
+        Map<String, Object> step = findFlowStep(flowSteps, stepCode);
+        Object detail = step.get("detail");
+        return detail == null ? defaultValue : String.valueOf(detail);
+    }
+
+    private String resolveFlowStatus(List<Object> flowSteps, String stepCode, String defaultValue) {
+        Map<String, Object> step = findFlowStep(flowSteps, stepCode);
+        Object status = step.get("status");
+        return status == null ? defaultValue : String.valueOf(status);
+    }
+
+    private Map<String, Object> findFlowStep(List<Object> flowSteps, String stepCode) {
+        for (Object item : flowSteps) {
+            if (item instanceof AgentFlowStepDTO) {
+                AgentFlowStepDTO step = (AgentFlowStepDTO) item;
+                if (stepCode.equals(step.getStepCode())) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("stepCode", step.getStepCode());
+                    row.put("status", step.getStatus());
+                    row.put("detail", step.getDetail());
+                    return row;
+                }
+            }
+            Map<String, Object> step = asMap(item);
+            if (stepCode.equals(step.get("stepCode"))) {
+                return step;
+            }
+        }
+        return Collections.emptyMap();
+    }
+
+    private Long longValue(Object value) {
+        if (value instanceof Number) {
+            return ((Number) value).longValue();
+        }
+        if (value == null) {
+            return null;
+        }
+        try {
+            return Long.parseLong(String.valueOf(value));
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private List<Map<String, Object>> retrieveRagKnowledge(String intent, String userMessage) {
@@ -1238,20 +1388,7 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     }
 
     private String resolveChatIntent(String message) {
-        String text = message == null ? "" : message;
-        if (containsAny(text, "你是什么", "什么模型", "哪个模型", "你是谁", "能做什么", "介绍一下", "你的能力", "怎么用")) {
-            return "identity";
-        }
-        if (containsAny(text, "秒杀", "优惠券", "代金券", "活动", "拉新", "复购", "草稿")) {
-            return "voucher_plan";
-        }
-        if (containsAny(text, "评价", "评论", "探店", "内容", "笔记", "口碑")) {
-            return "review_analysis";
-        }
-        if (containsAny(text, "订单", "销售", "收入", "营收", "成交", "转化", "支付")) {
-            return "order_analysis";
-        }
-        return "operation_chat";
+        return rulePolicyService.resolveIntent(message);
     }
 
     private String resolveChatDateRange(String message, String requestRange) {
@@ -1434,19 +1571,7 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     }
 
     private String resolveChatToolName(String intent) {
-        if ("identity".equals(intent)) {
-            return "agent_profile_tool";
-        }
-        if ("order_analysis".equals(intent)) {
-            return "order_analysis_tool";
-        }
-        if ("voucher_plan".equals(intent)) {
-            return "voucher_campaign_tool";
-        }
-        if ("review_analysis".equals(intent)) {
-            return "review_content_tool";
-        }
-        return "operation_diagnosis_tool";
+        return rulePolicyService.resolveToolName(intent);
     }
 
     private String resolveChatIntentName(String intent) {

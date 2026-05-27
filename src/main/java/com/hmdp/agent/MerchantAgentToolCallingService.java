@@ -91,6 +91,8 @@ public class MerchantAgentToolCallingService {
     private MerchantAgentPromptTemplateService promptTemplateService;
     @Resource
     private IMerchantAgentKnowledgeDocService agentKnowledgeDocService;
+    @Resource
+    private MerchantAgentRulePolicyService rulePolicyService;
 
     /**
      * 执行一次 Tool Calling 对话。
@@ -450,10 +452,7 @@ public class MerchantAgentToolCallingService {
     }
 
     private boolean isProhibitedOperation(String userMessage) {
-        return containsAny(userMessage,
-                "退款", "退钱", "取消订单", "删除", "删掉", "下架全部", "群发", "批量推送",
-                "修改支付", "改支付", "支付状态", "核销状态", "改核销", "直接核销", "自动核销",
-                "改库存", "清空库存", "修改价格", "改价格");
+        return rulePolicyService.isProhibitedOperation(userMessage);
     }
 
     private String buildRagPromptSection(List<Map<String, Object>> ragKnowledge) {

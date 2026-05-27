@@ -1,5 +1,6 @@
 package com.hmdp.controller;
 
+import com.hmdp.dto.AgentEvalRequest;
 import com.hmdp.dto.AgentKnowledgeDocRequest;
 import com.hmdp.dto.AgentKnowledgeEvaluateRequest;
 import com.hmdp.dto.AgentKnowledgeRetrieveRequest;
@@ -8,9 +9,13 @@ import com.hmdp.dto.MerchantCampaignDraftRequest;
 import com.hmdp.dto.MerchantAgentChatRequest;
 import com.hmdp.dto.Result;
 import com.hmdp.service.IMerchantAgentFacadeService;
+import com.hmdp.service.IMerchantAgentEvalCaseService;
+import com.hmdp.service.IMerchantAgentEvalRunService;
+import com.hmdp.service.IMerchantAgentEvalService;
 import com.hmdp.service.IMerchantAgentKnowledgeDocService;
 import com.hmdp.service.IMerchantAgentKnowledgeEvalCaseService;
 import com.hmdp.service.IMerchantAgentKnowledgeEvalRunService;
+import com.hmdp.service.AgentWorkflowRecorderService;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -35,6 +40,14 @@ public class MerchantAgentController {
     private IMerchantAgentKnowledgeEvalCaseService merchantAgentKnowledgeEvalCaseService;
     @Resource
     private IMerchantAgentKnowledgeEvalRunService merchantAgentKnowledgeEvalRunService;
+    @Resource
+    private AgentWorkflowRecorderService agentWorkflowRecorderService;
+    @Resource
+    private IMerchantAgentEvalCaseService merchantAgentEvalCaseService;
+    @Resource
+    private IMerchantAgentEvalService merchantAgentEvalService;
+    @Resource
+    private IMerchantAgentEvalRunService merchantAgentEvalRunService;
 
     /**
      * 查询 Agent 工具清单。
@@ -214,6 +227,62 @@ public class MerchantAgentController {
     @GetMapping("/knowledge-docs/evaluate-runs/{runId}")
     public Result queryKnowledgeEvalRunDetail(@PathVariable("runId") Long runId) {
         return merchantAgentKnowledgeEvalRunService.queryRunDetail(runId);
+    }
+
+    /**
+     * 查询某个店铺最近的 Agent Workflow Run。
+     */
+    @GetMapping("/workflows/runs")
+    public Result queryWorkflowRuns(@RequestParam("shopId") Long shopId) {
+        return agentWorkflowRecorderService.queryRuns(shopId);
+    }
+
+    /**
+     * 查询某次 Agent Workflow Run 的执行步骤。
+     */
+    @GetMapping("/workflows/runs/{runId}/steps")
+    public Result queryWorkflowSteps(@PathVariable("runId") Long runId) {
+        return agentWorkflowRecorderService.querySteps(runId);
+    }
+
+    /**
+     * 查询 Agent 行为评测用例。
+     */
+    @GetMapping("/eval-cases")
+    public Result queryAgentEvalCases() {
+        return merchantAgentEvalCaseService.queryEnabledCases();
+    }
+
+    /**
+     * 整体替换 Agent 行为评测用例。
+     */
+    @PutMapping("/eval-cases")
+    public Result replaceAgentEvalCases(@RequestBody AgentEvalRequest request) {
+        return merchantAgentEvalCaseService.replaceEnabledCases(request);
+    }
+
+    /**
+     * 执行 Agent 行为评测。
+     */
+    @PostMapping("/evaluate-agent")
+    public Result evaluateAgent(@RequestBody(required = false) AgentEvalRequest request) {
+        return merchantAgentEvalService.evaluateAgent(request);
+    }
+
+    /**
+     * 查询最近 Agent 行为评测运行记录。
+     */
+    @GetMapping("/eval-runs")
+    public Result queryAgentEvalRuns(@RequestParam(value = "limit", required = false) Integer limit) {
+        return merchantAgentEvalRunService.queryRecentRuns(limit);
+    }
+
+    /**
+     * 查询单次 Agent 行为评测运行详情。
+     */
+    @GetMapping("/eval-runs/{runId}")
+    public Result queryAgentEvalRunDetail(@PathVariable("runId") Long runId) {
+        return merchantAgentEvalRunService.queryRunDetail(runId);
     }
 
     /**

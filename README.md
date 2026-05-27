@@ -4,6 +4,47 @@
 
 项目目标不是单纯做一个聊天机器人，而是把已有本地生活业务能力封装成 Agent 可调用的工具，让 Agent 基于真实业务数据为商家生成可执行、可追踪、可确认的运营建议。
 
+## 前后端仓库
+
+本项目采用前后端分离架构：
+
+- 后端仓库：[godkunzzz3/hm-dianping](https://github.com/godkunzzz3/hm-dianping)
+- 前端仓库：[godkunzzz3/hmdp-web](https://github.com/godkunzzz3/hmdp-web)
+
+后端负责 Spring Boot 业务接口、Redis 实战能力、Agent Tool Calling、RAG 知识库、活动草稿确认和操作审计。前端负责用户端页面、商家 Agent 工作台、RAG 调试评测、草稿确认和操作审计展示。
+
+### 前端请求与 Nginx 代理
+
+前端静态页面统一通过 `/api` 访问后端接口，`js/common.js` 中配置：
+
+```js
+let commonURL = "/api";
+axios.defaults.baseURL = commonURL;
+```
+
+Nginx 将 `/api/*` 请求 rewrite 后代理到本地后端：
+
+```nginx
+location /api {
+    rewrite /api(/.*) $1 break;
+    proxy_pass http://127.0.0.1:8081;
+}
+```
+
+因此本地复现时，前端访问地址是 `http://localhost:8080`，后端服务地址是 `http://localhost:8081`。
+
+### 商家演示账号机制
+
+本地演示使用手机号验证码登录。验证码可从 Redis 或后端日志中查看，登录成功后前端会保存 token 并访问商家工作台。
+
+演示数据中，`src/main/resources/db/hmdp.sql` 将 `tb_user` 自增 ID 设置为 1010，`src/main/resources/db/merchant_schema.sql` 默认绑定 `user_id=1010` 和 `shop_id=10143`。因此，在全新导入 SQL 后，首次使用新手机号登录生成的用户通常就是演示商家用户，可访问默认商家店铺。
+
+商家 Agent 演示入口：
+
+```text
+http://localhost:8080/merchant-agent.html
+```
+
 ## 项目亮点
 
 - Redis 实战完整链路：缓存、分布式锁、Lua 秒杀、Stream 异步下单、BitMap 签到、Feed 流、GEO 附近商户。
@@ -428,6 +469,94 @@ http://localhost:8080/merchant-agent.html
 - `POST /merchant-agent/knowledge-docs/evaluate` RAG 召回评测
 - `GET /merchant-agent/knowledge-docs/evaluate-cases` 查询评测用例
 - `PUT /merchant-agent/knowledge-docs/evaluate-cases` 保存评测用例
+- `GET /merchant-agent/eval-cases` 查询 Agent 行为评测用例
+- `PUT /merchant-agent/eval-cases` 保存 Agent 行为评测用例
+- `POST /merchant-agent/evaluate-agent` 执行 Agent 行为评测
+- `GET /merchant-agent/eval-runs` 查询 Agent 行为评测运行记录
+- `GET /merchant-agent/eval-runs/{runId}` 查询 Agent 行为评测详情
+
+## 自动化测试与 CI
+
+当前已新增第一批 Agent 安全边界测试，重点覆盖：
+
+- Agent Tool Registry 模型可调用工具白名单。
+- `voucher_campaign_tool` 写工具不会暴露给模型直接调用。
+- 活动草稿编辑时的标题、副标题、规则、金额、库存和活动时间安全校验。
+- 活动草稿确认创建真实优惠券前会复用后端安全校验。
+
+本地可执行：
+
+```bash
+mvn test
+```
+
+GitHub Actions 会在 `master` / `main` 分支的 `push` 和 `pull_request` 时自动运行：
+
+```bash
+mvn -B test
+```
+
+当前测试不依赖真实 MySQL、Redis 或 DashScope API Key，因此 CI 不需要额外启动外部服务。
+
+## Agent Workflow 执行链路持久化
+
+当前已将普通 Agent 对话和 Tool Calling 的执行链路从接口响应中的 `flowTrace` 扩展为 Workflow Run / Step 持久化记录。
+
+- 每个 Workflow Run 表示一次 Agent 执行，例如普通商家对话或 Tool Calling 对话。
+- 每个 Workflow Step 表示一次执行节点，例如 RAG 召回、意图识别、工具选择、工具执行、草稿生成、模型调用和最终回复。
+- Workflow 记录用于回放 Agent 执行过程，定位模型选错工具、工具执行失败、RAG 召回不足或业务数据不足等问题。
+- Workflow 记录是旁路可观测性能力，记录失败不会影响 Agent 主流程。
+
+当前第一版只做执行链路落库和查询，不是可配置 Workflow 引擎，也不表示已经实现 Multi-Agent。
+
+## Agent Eval 行为评测
+
+项目中 RAG Eval 用于评测知识召回质量，Agent Eval 用于评测 Agent 行为链路是否符合预期。
+
+第一版 Agent Eval 不调用真实大模型，也不执行真实工具，而是复用 `MerchantAgentRulePolicyService` 中的确定性规则，批量评测：
+
+- 意图识别是否正确。
+- 工具选择是否正确。
+- 是否需要人工确认判断是否正确。
+- 风险等级判断是否正确。
+- 汇总整体得分和失败诊断。
+
+当前 Agent Eval 是最小闭环，不包含 LLM-as-Judge、多模型 A/B 实验或 Multi-Agent Eval。
+
+### 近期开发记录：Agent Eval 最小闭环
+
+功能目标：
+
+补齐 Agent 行为评测的第一版闭环，用确定性规则验证 Agent 的意图识别、工具选择、人工确认判断和风险等级判断是否符合预期，方便后续面试展示和回归测试。
+
+业务逻辑：
+
+1. 开发者或面试演示时通过 `POST /merchant-agent/evaluate-agent` 触发评测。
+2. 如果请求体传入自定义 cases，则使用临时用例；否则读取 `tb_agent_eval_case` 中启用的持久化用例。
+3. 如果没有持久化用例，后端使用少量默认用例兜底。
+4. 每条用例复用 `MerchantAgentRulePolicyService` 计算实际意图、工具、是否需要人工确认和风险等级。
+5. 后端把评测摘要写入 `tb_agent_eval_run`，把单条明细写入 `tb_agent_eval_result`。
+
+工程设计：
+
+- Agent Eval 不调用真实大模型，不调用真实工具，也不读取真实商家经营数据，避免评测依赖外部服务。
+- 规则复用 `MerchantAgentRulePolicyService`，避免线上 Agent 和评测系统出现两套判断逻辑。
+- RAG Eval 和 Agent Eval 分表保存：RAG Eval 关注知识召回质量，Agent Eval 关注 Agent 行为链路。
+- 每条用例按 intent、tool、confirm、risk 四项评分，并输出失败诊断，便于定位规则偏差。
+
+验证方式：
+
+- 本地执行 `/Applications/IntelliJ\ IDEA.app/Contents/plugins/maven/lib/maven3/bin/mvn test`。
+- 测试结果：`Tests run: 40, Failures: 0, Errors: 0, Skipped: 0`，`BUILD SUCCESS`。
+- 关键表：`tb_agent_eval_case`、`tb_agent_eval_run`、`tb_agent_eval_result`。
+- 关键类：`MerchantAgentEvalServiceImpl`、`MerchantAgentEvalCaseServiceImpl`、`MerchantAgentEvalRunServiceImpl`、`MerchantAgentRulePolicyService`。
+- 关键接口：`/merchant-agent/eval-cases`、`/merchant-agent/evaluate-agent`、`/merchant-agent/eval-runs`。
+
+面试讲法：
+
+可以把这一段讲成“Agent 行为回归测试”。我没有直接用大模型自评，也没有做复杂的 LLM-as-Judge，而是先把高确定性的行为抽出来评测：同一个商家问题应该识别成什么意图、选择哪个工具、是否需要人工确认、风险等级是否正确。
+
+这个设计的价值是让 Agent 不只是能跑 Demo，还能对安全边界做自动化回归。后续如果扩展真实模型评测或 LLM-as-Judge，也可以在这个 case/run/result 基础上继续叠加，而不是影响线上 Agent 主链路。
 
 ## 面试讲解关键词
 

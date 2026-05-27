@@ -259,6 +259,57 @@ Agent 涉及真实业务动作时必须有人确认。
 
 RAG 的作用是让 Agent 不只依赖模型通用知识，而是结合平台规则、行业经验和运营策略。
 
+## Agent Eval 最小闭环
+
+一句话介绍：
+
+这一阶段给商家运营 Agent 增加了第一版行为评测闭环，用确定性规则批量验证意图识别、工具选择、人工确认判断和风险等级判断是否符合预期。
+
+设计取舍：
+
+第一版没有做 LLM-as-Judge，也没有调用真实大模型，因为当前目标是验证 Agent 安全边界和规则链路是否稳定。评测服务复用 `MerchantAgentRulePolicyService`，避免线上 Agent 和评测系统维护两套意图、工具和风险规则。RAG Eval 和 Agent Eval 分开建表，前者关注知识召回质量，后者关注 Agent 行为链路。
+
+核心流程：
+
+1. 调用 `POST /merchant-agent/evaluate-agent`。
+2. 如果请求带自定义 cases，则使用临时用例。
+3. 如果没有自定义 cases，则读取 `tb_agent_eval_case` 中启用的持久化用例。
+4. 如果持久化用例为空，则使用后端默认用例。
+5. 对每条用例调用 `MerchantAgentRulePolicyService.resolveIntent`、`resolveToolName`、`resolveNeedConfirm`、`resolveRiskLevel`。
+6. 对比 expected 和 actual，计算单条得分与失败诊断。
+7. 保存 `tb_agent_eval_run` 汇总记录和 `tb_agent_eval_result` 明细记录。
+
+关键类、接口和表：
+
+- 关键类：`MerchantAgentEvalServiceImpl`、`MerchantAgentEvalCaseServiceImpl`、`MerchantAgentEvalRunServiceImpl`、`MerchantAgentRulePolicyService`。
+- 关键接口：`GET /merchant-agent/eval-cases`、`PUT /merchant-agent/eval-cases`、`POST /merchant-agent/evaluate-agent`、`GET /merchant-agent/eval-runs`、`GET /merchant-agent/eval-runs/{runId}`。
+- 关键表：`tb_agent_eval_case`、`tb_agent_eval_run`、`tb_agent_eval_result`。
+- 测试类：`MerchantAgentEvalServiceTest`。
+
+可能追问：
+
+Q1：
+为什么第一版不调用真实大模型评测？
+
+A1：
+因为第一版目标是做可重复、低成本的行为回归测试。真实模型输出有随机性，还依赖 API Key、网络和模型版本；先评测确定性规则可以稳定覆盖意图、工具、人工确认和风险等级这些安全边界。
+
+Q2：
+为什么 Agent Eval 不和 RAG Eval 放一张表？
+
+A2：
+两者评测对象不同。RAG Eval 评测知识召回质量，比如 Top1/TopK 命中和无可靠召回；Agent Eval 评测行为链路，比如意图识别、工具选择、确认策略和风险等级。分表能让指标、明细和趋势都更清晰。
+
+Q3：
+如果后续要评测模型回答质量怎么办？
+
+A3：
+可以在现有 case/run/result 结构上扩展 LLM-as-Judge 或人工标注字段，但不会替代当前规则评测。规则评测负责安全边界，模型质量评测负责回答质量，两者应该分层。
+
+边界说明：
+
+当前 Agent Eval 是最小闭环，不调用真实大模型，不执行真实工具，不读取真实商家经营数据，不包含 LLM-as-Judge、多模型 A/B 实验、Multi-Agent Eval 或前端复杂页面。
+
 本项目 RAG 流程：
 
 1. 维护知识文档。

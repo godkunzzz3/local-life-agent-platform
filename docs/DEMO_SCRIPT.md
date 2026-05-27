@@ -228,3 +228,70 @@ http://localhost:8080/merchant-agent.html
 4. RAG 召回调试和评测
 
 不要在面试里花太多时间点普通页面，重点讲清楚系统设计和关键代码。
+
+## 9. Agent Eval 后端接口演示
+
+本阶段只有后端接口，没有新增前端页面。面试时可以用 Postman、Apifox 或 curl 展示。
+
+请求路径：
+
+```text
+POST http://localhost:8081/merchant-agent/evaluate-agent
+```
+
+请求方式：
+
+```text
+POST
+```
+
+示例请求体：
+
+```json
+{
+  "cases": [
+    {
+      "caseName": "订单分析",
+      "userInput": "帮我分析最近7天订单情况",
+      "expectedIntent": "order_analysis",
+      "expectedTools": ["order_analysis_tool"],
+      "expectedNeedConfirm": false,
+      "expectedRiskLevel": "LOW"
+    },
+    {
+      "caseName": "秒杀活动建议",
+      "userInput": "帮我设计一个周末秒杀活动",
+      "expectedIntent": "voucher_plan",
+      "expectedTools": ["voucher_campaign_tool"],
+      "expectedNeedConfirm": true,
+      "expectedRiskLevel": "MEDIUM"
+    }
+  ]
+}
+```
+
+预期返回：
+
+- `runId`：本次评测运行 ID。
+- `totalCount`：评测用例数。
+- `passCount` / `failCount`：通过和失败数量。
+- `intentAccuracy`、`toolAccuracy`、`confirmAccuracy`、`riskAccuracy`：四类指标。
+- `overallScore`：综合得分。
+- `items`：每条用例的 expected / actual、是否通过和失败诊断。
+
+可继续查询：
+
+```text
+GET http://localhost:8081/merchant-agent/eval-runs
+GET http://localhost:8081/merchant-agent/eval-runs/{runId}
+GET http://localhost:8081/merchant-agent/eval-cases
+PUT http://localhost:8081/merchant-agent/eval-cases
+```
+
+面试展示讲法：
+
+> 这里我演示的不是模型回答质量打分，而是 Agent 行为链路的确定性回归测试。它复用线上 `MerchantAgentRulePolicyService`，检查同一个商家输入是否能稳定得到正确意图、正确工具、正确人工确认策略和正确风险等级。
+
+边界说明：
+
+当前 Agent Eval 不调用真实大模型，不执行真实工具，不做 LLM-as-Judge，也没有新增前端页面。

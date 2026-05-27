@@ -173,4 +173,137 @@ CREATE TABLE IF NOT EXISTS `tb_agent_knowledge_eval_run` (
   INDEX `idx_case_source_time`(`case_source`, `create_time`) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '商家运营Agent RAG评测运行记录表' ROW_FORMAT = Dynamic;
 
+-- ----------------------------
+-- Table structure for tb_agent_eval_case
+-- ----------------------------
+CREATE TABLE IF NOT EXISTS `tb_agent_eval_case` (
+  `id` bigint(20) UNSIGNED NOT NULL COMMENT '主键，使用 RedisIdWorker 生成',
+  `case_name` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '用例名称',
+  `user_input` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '商家输入问题',
+  `expected_intent` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '期望意图',
+  `expected_tools` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '期望工具名JSON数组',
+  `expected_need_confirm` tinyint(1) UNSIGNED NOT NULL DEFAULT 0 COMMENT '是否期望触发人工确认：0否，1是',
+  `expected_risk_level` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'LOW' COMMENT '期望风险等级：LOW/MEDIUM/HIGH',
+  `expected_keywords` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '期望命中关键词JSON数组，第一版可选',
+  `case_type` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'rule' COMMENT '用例类型：rule/safety/tool/confirm',
+  `sort_order` int(11) UNSIGNED NOT NULL DEFAULT 1 COMMENT '排序号',
+  `status` tinyint(1) UNSIGNED NOT NULL DEFAULT 1 COMMENT '状态：1启用，0停用',
+  `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_status_sort`(`status`, `sort_order`) USING BTREE,
+  INDEX `idx_intent_status`(`expected_intent`, `status`) USING BTREE,
+  INDEX `idx_case_type_status`(`case_type`, `status`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '商家运营Agent行为评测用例表' ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for tb_agent_eval_run
+-- ----------------------------
+CREATE TABLE IF NOT EXISTS `tb_agent_eval_run` (
+  `id` bigint(20) UNSIGNED NOT NULL COMMENT '主键，使用 RedisIdWorker 生成',
+  `case_source` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'persisted' COMMENT '用例来源：custom/persisted/default',
+  `total_count` int(11) UNSIGNED NOT NULL DEFAULT 0 COMMENT '评测用例总数',
+  `pass_count` int(11) UNSIGNED NOT NULL DEFAULT 0 COMMENT '通过用例数',
+  `fail_count` int(11) UNSIGNED NOT NULL DEFAULT 0 COMMENT '失败用例数',
+  `intent_accuracy` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '0.00%' COMMENT '意图识别准确率',
+  `tool_accuracy` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '0.00%' COMMENT '工具匹配准确率',
+  `confirm_accuracy` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '0.00%' COMMENT '人工确认判断准确率',
+  `risk_accuracy` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '0.00%' COMMENT '风险等级准确率',
+  `overall_score` decimal(6,2) NOT NULL DEFAULT 0.00 COMMENT '综合得分，0-100',
+  `summary` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '评测摘要',
+  `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_create_time`(`create_time`) USING BTREE,
+  INDEX `idx_case_source_time`(`case_source`, `create_time`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '商家运营Agent行为评测运行记录表' ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for tb_agent_eval_result
+-- ----------------------------
+CREATE TABLE IF NOT EXISTS `tb_agent_eval_result` (
+  `id` bigint(20) UNSIGNED NOT NULL COMMENT '主键，使用 RedisIdWorker 生成',
+  `run_id` bigint(20) UNSIGNED NOT NULL COMMENT 'Agent Eval Run ID',
+  `case_id` bigint(20) UNSIGNED DEFAULT NULL COMMENT 'Agent Eval Case ID，自定义临时用例可为空',
+  `case_name` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '用例名称快照',
+  `user_input` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '用户输入快照',
+  `expected_intent` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '期望意图',
+  `actual_intent` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '实际意图',
+  `expected_tools` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '期望工具JSON数组',
+  `actual_tools` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '实际工具JSON数组',
+  `expected_need_confirm` tinyint(1) UNSIGNED NOT NULL DEFAULT 0 COMMENT '期望是否需要人工确认',
+  `actual_need_confirm` tinyint(1) UNSIGNED NOT NULL DEFAULT 0 COMMENT '实际是否需要人工确认',
+  `expected_risk_level` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'LOW' COMMENT '期望风险等级',
+  `actual_risk_level` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'LOW' COMMENT '实际风险等级',
+  `intent_passed` tinyint(1) UNSIGNED NOT NULL DEFAULT 0 COMMENT '意图是否通过',
+  `tool_passed` tinyint(1) UNSIGNED NOT NULL DEFAULT 0 COMMENT '工具是否通过',
+  `confirm_passed` tinyint(1) UNSIGNED NOT NULL DEFAULT 0 COMMENT '人工确认判断是否通过',
+  `risk_passed` tinyint(1) UNSIGNED NOT NULL DEFAULT 0 COMMENT '风险等级是否通过',
+  `passed` tinyint(1) UNSIGNED NOT NULL DEFAULT 0 COMMENT '整体是否通过',
+  `score` decimal(6,2) NOT NULL DEFAULT 0.00 COMMENT '单条用例得分，0-100',
+  `diagnosis` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '失败诊断',
+  `detail_json` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci COMMENT '完整评测明细JSON',
+  `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_run_id`(`run_id`) USING BTREE,
+  INDEX `idx_case_id`(`case_id`) USING BTREE,
+  INDEX `idx_run_passed`(`run_id`, `passed`) USING BTREE,
+  INDEX `idx_intent_passed`(`expected_intent`, `passed`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '商家运营Agent行为评测明细表' ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for tb_agent_workflow_run
+-- ----------------------------
+CREATE TABLE IF NOT EXISTS `tb_agent_workflow_run` (
+  `id` bigint(20) UNSIGNED NOT NULL COMMENT '主键，建议使用 RedisIdWorker 生成',
+  `session_id` bigint(20) UNSIGNED DEFAULT NULL COMMENT '关联会话ID，运营报告或系统任务可为空',
+  `shop_id` bigint(20) UNSIGNED NOT NULL COMMENT '店铺ID',
+  `merchant_id` bigint(20) UNSIGNED DEFAULT NULL COMMENT '商家用户ID',
+  `scene` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '场景：agent_chat / tool_calling_chat / operation_report',
+  `trigger_type` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'merchant_message' COMMENT '触发类型：merchant_message / report_generate / system',
+  `user_message` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '触发本次执行的用户问题，需脱敏和截断',
+  `intent` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '识别出的业务意图',
+  `status` tinyint(1) UNSIGNED NOT NULL DEFAULT 1 COMMENT '状态：1运行中，2成功，3失败',
+  `start_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '开始时间',
+  `end_time` timestamp NULL DEFAULT NULL COMMENT '结束时间',
+  `cost_millis` bigint(20) UNSIGNED DEFAULT NULL COMMENT '总耗时，毫秒',
+  `error_msg` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '失败原因',
+  `summary` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '执行摘要',
+  `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_shop_time`(`shop_id`, `create_time`) USING BTREE,
+  INDEX `idx_session_time`(`session_id`, `create_time`) USING BTREE,
+  INDEX `idx_scene_status_time`(`scene`, `status`, `create_time`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '商家运营Agent Workflow运行记录表' ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- Table structure for tb_agent_workflow_step
+-- ----------------------------
+CREATE TABLE IF NOT EXISTS `tb_agent_workflow_step` (
+  `id` bigint(20) UNSIGNED NOT NULL COMMENT '主键，建议使用 RedisIdWorker 生成',
+  `run_id` bigint(20) UNSIGNED NOT NULL COMMENT 'Workflow Run ID',
+  `session_id` bigint(20) UNSIGNED DEFAULT NULL COMMENT '关联会话ID',
+  `shop_id` bigint(20) UNSIGNED NOT NULL COMMENT '店铺ID',
+  `step_order` int(11) UNSIGNED NOT NULL COMMENT '步骤序号，从1开始',
+  `step_code` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '步骤编码',
+  `step_name` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '步骤名称',
+  `node_type` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '节点类型：RAG_RETRIEVE / INTENT_RESOLVE / TOOL_EXECUTE / MODEL_CALL / FINAL_ANSWER等',
+  `tool_name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '关联工具名',
+  `status` tinyint(1) UNSIGNED NOT NULL DEFAULT 1 COMMENT '状态：1成功，2失败，3跳过',
+  `input_json` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci COMMENT '步骤输入JSON，需脱敏和截断',
+  `output_json` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci COMMENT '步骤输出JSON，需脱敏和截断',
+  `detail` varchar(1024) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '步骤说明',
+  `error_msg` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '失败原因',
+  `start_time` timestamp NULL DEFAULT NULL COMMENT '步骤开始时间',
+  `end_time` timestamp NULL DEFAULT NULL COMMENT '步骤结束时间',
+  `cost_millis` bigint(20) UNSIGNED DEFAULT NULL COMMENT '步骤耗时，毫秒',
+  `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_run_order`(`run_id`, `step_order`) USING BTREE,
+  INDEX `idx_shop_time`(`shop_id`, `create_time`) USING BTREE,
+  INDEX `idx_step_status`(`step_code`, `status`) USING BTREE,
+  INDEX `idx_tool_time`(`tool_name`, `create_time`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '商家运营Agent Workflow步骤记录表' ROW_FORMAT = Dynamic;
+
 SET FOREIGN_KEY_CHECKS = 1;
