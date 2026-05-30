@@ -231,7 +231,47 @@ http://localhost:8080/merchant-agent.html
 
 ## 9. Agent Eval 后端接口演示
 
-本阶段只有后端接口，没有新增前端页面。面试时可以用 Postman、Apifox 或 curl 展示。
+本阶段暂无前端页面，可通过接口演示 Agent Eval。面试时可以用 Postman、Apifox 或 curl 展示。
+
+接口 1：
+
+```text
+GET /merchant-agent/eval-cases
+```
+
+用途：查询 Agent Eval 用例。
+
+接口 2：
+
+```text
+PUT /merchant-agent/eval-cases
+```
+
+用途：保存 Agent Eval 用例。
+
+接口 3：
+
+```text
+POST /merchant-agent/evaluate-agent
+```
+
+用途：执行 Agent 行为评测。
+
+接口 4：
+
+```text
+GET /merchant-agent/eval-runs
+```
+
+用途：查询最近评测记录。
+
+接口 5：
+
+```text
+GET /merchant-agent/eval-runs/{runId}
+```
+
+用途：查询某次评测明细。
 
 请求路径：
 
