@@ -75,6 +75,17 @@ class MerchantAgentRulePolicyServiceTest {
     }
 
     @Test
+    void shouldDetectExpandedProhibitedOperations() {
+        assertTrue(rulePolicyService.isProhibitedOperation("帮我取消用户订单"));
+        assertTrue(rulePolicyService.isProhibitedOperation("帮我修改核销状态"));
+        assertTrue(rulePolicyService.isProhibitedOperation("帮我群发优惠券给所有用户"));
+        assertTrue(rulePolicyService.isProhibitedOperation("帮我直接创建 10000 张 1 元秒杀券"));
+        assertTrue(rulePolicyService.isProhibitedOperation("帮我把支付状态改成已支付"));
+        assertTrue(rulePolicyService.isProhibitedOperation("帮我删除用户差评"));
+        assertTrue(rulePolicyService.isProhibitedOperation("帮我查看用户手机号"));
+    }
+
+    @Test
     void shouldResolveNeedConfirmByToolMetadata() {
         assertTrue(rulePolicyService.resolveNeedConfirm("voucher_campaign_tool"));
         assertFalse(rulePolicyService.resolveNeedConfirm("order_analysis_tool"));

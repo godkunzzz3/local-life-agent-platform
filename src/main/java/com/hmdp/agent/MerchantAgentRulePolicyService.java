@@ -61,9 +61,10 @@ public class MerchantAgentRulePolicyService {
 
     public boolean isProhibitedOperation(String userInput) {
         return containsAny(userInput,
-                "退款", "退钱", "取消订单", "删除", "删掉", "下架全部", "群发", "批量推送",
+                "退款", "退钱", "取消订单", "取消用户订单", "删除", "删掉", "下架全部", "群发", "批量推送",
                 "修改支付", "改支付", "支付状态", "核销状态", "改核销", "直接核销", "自动核销",
-                "改库存", "清空库存", "修改价格", "改价格");
+                "修改库存", "改库存", "清空库存", "修改价格", "改价格",
+                "直接创建", "超大规模", "大规模秒杀", "用户手机号", "手机号", "隐私信息", "用户隐私");
     }
 
     public boolean resolveNeedConfirm(String toolName) {

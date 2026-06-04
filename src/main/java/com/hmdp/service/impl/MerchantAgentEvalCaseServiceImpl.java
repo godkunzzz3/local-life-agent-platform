@@ -10,6 +10,7 @@ import com.hmdp.entity.AgentEvalCase;
 import com.hmdp.mapper.AgentEvalCaseMapper;
 import com.hmdp.service.IMerchantAgentEvalCaseService;
 import com.hmdp.utils.RedisIdWorker;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
@@ -21,6 +22,7 @@ import java.util.Map;
 /**
  * Agent 行为评测用例服务实现。
  */
+@Slf4j
 @Service
 public class MerchantAgentEvalCaseServiceImpl
         extends ServiceImpl<AgentEvalCaseMapper, AgentEvalCase>
@@ -33,11 +35,20 @@ public class MerchantAgentEvalCaseServiceImpl
 
     @Override
     public Result queryEnabledCases() {
-        List<AgentEvalCaseItemDTO> items = listEnabledCaseItems();
+        List<AgentEvalCaseItemDTO> items;
+        boolean storageAvailable = true;
+        try {
+            items = listEnabledCaseItems();
+        } catch (RuntimeException e) {
+            log.warn("Agent Eval cases storage unavailable, return empty cases.", e);
+            items = new ArrayList<>();
+            storageAvailable = false;
+        }
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("cases", items);
         result.put("total", items.size());
         result.put("maxCaseCount", MAX_EVALUATION_CASES);
+        result.put("storageAvailable", storageAvailable);
         return Result.ok(result);
     }
 

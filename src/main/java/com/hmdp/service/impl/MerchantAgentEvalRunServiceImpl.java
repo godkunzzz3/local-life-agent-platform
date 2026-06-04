@@ -11,6 +11,7 @@ import com.hmdp.entity.AgentEvalRun;
 import com.hmdp.mapper.AgentEvalRunMapper;
 import com.hmdp.service.IMerchantAgentEvalResultService;
 import com.hmdp.service.IMerchantAgentEvalRunService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
@@ -22,6 +23,7 @@ import java.util.Map;
 /**
  * Agent 行为评测运行记录服务实现。
  */
+@Slf4j
 @Service
 public class MerchantAgentEvalRunServiceImpl
         extends ServiceImpl<AgentEvalRunMapper, AgentEvalRun>
@@ -33,10 +35,16 @@ public class MerchantAgentEvalRunServiceImpl
     @Override
     public Result queryRecentRuns(Integer limit) {
         int safeLimit = limit == null || limit <= 0 ? 20 : Math.min(limit, 50);
-        List<AgentEvalRun> runs = query()
-                .orderByDesc("create_time")
-                .last("LIMIT " + safeLimit)
-                .list();
+        List<AgentEvalRun> runs;
+        try {
+            runs = query()
+                    .orderByDesc("create_time")
+                    .last("LIMIT " + safeLimit)
+                    .list();
+        } catch (RuntimeException e) {
+            log.warn("Agent Eval runs storage unavailable, return empty history.", e);
+            return Result.ok(new ArrayList<>());
+        }
         List<AgentEvalRunSummaryDTO> rows = new ArrayList<>();
         for (AgentEvalRun run : runs) {
             rows.add(toSummary(run));
