@@ -80,6 +80,31 @@ class AgentWorkflowRecorderServiceTest {
     }
 
     @Test
+    void shouldRecordMemoryLoadStepWithoutFullMemoryValue() {
+        when(redisIdWorker.nextId("agent")).thenReturn(2L);
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("shopId", 10143L);
+        input.put("status", 1);
+        input.put("memoryTypes", Collections.singletonList("PREFERENCE"));
+        Map<String, Object> output = new LinkedHashMap<>();
+        output.put("hitCount", 1);
+        output.put("memoryKeys", Collections.singletonList("activity_style"));
+        output.put("truncatedSummary", "activity_style:偏好周末轻量活动");
+
+        recorderService.recordStep(1L, 10L, 10143L, 1,
+                "MEMORY_LOAD", "加载商家记忆", "MEMORY_LOAD", null, "success",
+                input, output, "本轮命中 1 条启用商家记忆", null, null);
+
+        ArgumentCaptor<AgentWorkflowStep> captor = ArgumentCaptor.forClass(AgentWorkflowStep.class);
+        verify(workflowStepService).save(captor.capture());
+        AgentWorkflowStep step = captor.getValue();
+        assertEquals("MEMORY_LOAD", step.getStepCode());
+        assertEquals("MEMORY_LOAD", step.getNodeType());
+        assertTrue(step.getOutputJson().contains("activity_style"));
+        assertFalse(step.getOutputJson().contains("偏好周末轻量活动且不要打折超过20个点"));
+    }
+
+    @Test
     void shouldMaskSensitiveJsonFields() {
         when(redisIdWorker.nextId("agent")).thenReturn(2L);
         Map<String, Object> output = new LinkedHashMap<>();

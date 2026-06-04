@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hmdp.dto.AgentFlowStepDTO;
+import com.hmdp.dto.AgentMemoryPromptDTO;
 import com.hmdp.dto.AgentToolDefinitionDTO;
 import com.hmdp.dto.MerchantAgentChatRequest;
 import com.hmdp.entity.AgentMessage;
@@ -112,6 +113,11 @@ public class MerchantAgentToolCallingService {
      * 这样可以让模型理解“继续、刚才、它”这类上下文，同时避免工具 JSON 过长导致 prompt 膨胀。</p>
      */
     public Map<String, Object> chat(Shop shop, MerchantAgentChatRequest request, List<AgentMessage> historyMessages) {
+        return chat(shop, request, historyMessages, "暂无商家偏好记忆。", new ArrayList<>());
+    }
+
+    public Map<String, Object> chat(Shop shop, MerchantAgentChatRequest request, List<AgentMessage> historyMessages,
+                                    String merchantMemory, List<AgentMemoryPromptDTO> memories) {
         if (isBlank(apiKey)) {
             throw new IllegalStateException("未配置 DASHSCOPE_API_KEY，Tool Calling 学习接口需要真实模型支持。");
         }
@@ -124,9 +130,9 @@ public class MerchantAgentToolCallingService {
         List<ChatMessage> messages = new ArrayList<>();
         List<Map<String, Object>> ragKnowledge = retrieveToolCallingRagKnowledge(intent, userMessage);
         String ragRetrievalMode = resolveRagRetrievalMode(ragKnowledge);
-        Map<String, Object> promptContext = buildPromptContext(shop, userMessage, intent, ragRetrievalMode, ragKnowledge);
+        Map<String, Object> promptContext = buildPromptContext(shop, userMessage, intent, ragRetrievalMode, ragKnowledge, merchantMemory, memories);
 
-        messages.add(SystemMessage.from(buildSystemPrompt(shop, userMessage, ragKnowledge)));
+        messages.add(SystemMessage.from(buildSystemPrompt(shop, userMessage, ragKnowledge, merchantMemory)));
         appendHistoryMessages(messages, historyMessages);
         messages.add(UserMessage.from(userMessage));
         flowTrace.add(flow("receive_message", "接收商家问题", "success",
@@ -234,13 +240,15 @@ public class MerchantAgentToolCallingService {
         return builder.build();
     }
 
-    private String buildSystemPrompt(Shop shop, String userMessage, List<Map<String, Object>> ragKnowledge) {
+    private String buildSystemPrompt(Shop shop, String userMessage, List<Map<String, Object>> ragKnowledge,
+                                     String merchantMemory) {
         return promptTemplateService.toolCallingFrame()
                 .replace("{{systemPrompt}}", promptTemplateService.systemPrompt())
                 .replace("{{behaviorBoundary}}", promptTemplateService.behaviorBoundary())
                 .replace("{{shopId}}", String.valueOf(shop.getId()))
                 .replace("{{shopName}}", shop.getName())
                 .replace("{{userMessage}}", userMessage)
+                .replace("{{merchantMemory}}", isBlank(merchantMemory) ? "暂无商家偏好记忆。" : merchantMemory)
                 .replace("{{ragKnowledge}}", buildRagPromptSection(ragKnowledge));
     }
 
@@ -390,7 +398,8 @@ public class MerchantAgentToolCallingService {
     }
 
     private Map<String, Object> buildPromptContext(Shop shop, String userMessage, String intent,
-                                                   String ragRetrievalMode, List<Map<String, Object>> ragKnowledge) {
+                                                   String ragRetrievalMode, List<Map<String, Object>> ragKnowledge,
+                                                   String merchantMemory, List<AgentMemoryPromptDTO> memories) {
         Map<String, Object> context = new LinkedHashMap<>();
         context.put("scene", "merchant_tool_calling_chat");
         context.put("shopId", shop.getId());
@@ -400,9 +409,12 @@ public class MerchantAgentToolCallingService {
         context.put("promptVersion", promptTemplateService.promptVersion());
         context.put("ragRetrievalMode", ragRetrievalMode);
         context.put("ragKnowledge", ragKnowledge);
+        context.put("merchantMemory", isBlank(merchantMemory) ? "暂无商家偏好记忆。" : merchantMemory);
+        context.put("memoryHitCount", memories == null ? 0 : memories.size());
         context.put("constraints", Arrays.asList(
                 "Tool Calling 模式由模型决定调用哪个只读工具",
                 "RAG 知识只提供运营规则背景，实时经营数据必须来自工具调用",
+                "商家偏好记忆只代表表达风格、活动偏好或运营约束，不能覆盖工具返回的真实数据",
                 "涉及创建真实活动时只能提示生成草稿和商家确认，不能直接执行"
         ));
         return context;

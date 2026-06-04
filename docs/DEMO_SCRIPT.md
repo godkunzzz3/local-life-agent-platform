@@ -366,3 +366,66 @@ PUT http://localhost:8081/merchant-agent/eval-cases
 边界说明：
 
 当前 Agent Eval 不调用真实大模型，不执行真实工具，不做 LLM-as-Judge，也不做多模型 A/B 或 Multi-Agent 评测。前端只是轻量展示入口，复杂评测配置仍以后端接口和测试为主。
+
+## 10. Memory 小闭环后端演示
+
+本阶段暂无前端页面，可通过接口演示 Memory 小闭环。
+
+说明：
+
+本阶段新增商家偏好记忆后端能力，可通过接口维护 Memory，并在 Agent 对话和 Tool Calling Prompt 中注入启用的商家偏好。
+
+接口 1：
+
+```text
+GET /merchant-agent/shops/{shopId}/memories
+```
+
+用途：查询店铺 Memory。
+
+接口 2：
+
+```text
+POST /merchant-agent/shops/{shopId}/memories
+```
+
+用途：新增 Memory。
+
+示例请求体：
+
+```json
+{
+  "memoryType": "PREFERENCE",
+  "memoryKey": "activity_style",
+  "memoryValue": "商家偏好周末活动，活动文案希望轻松一点"
+}
+```
+
+接口 3：
+
+```text
+PUT /merchant-agent/memories/{memoryId}
+```
+
+用途：编辑或启用 / 禁用 Memory。
+
+接口 4：
+
+```text
+DELETE /merchant-agent/memories/{memoryId}
+```
+
+用途：逻辑删除或禁用 Memory。
+
+演示步骤：
+
+1. 新增一条商家偏好 Memory。
+2. 查询 Memory 列表，确认 `status=1`。
+3. 发起普通 Agent 对话，说明 Memory 会进入 Prompt。
+4. 发起 Tool Calling 对话，说明 Memory 不影响工具白名单，只作为偏好约束进入 Prompt。
+5. 查看 Workflow，确认存在 `MEMORY_LOAD` step。
+6. 说明 `MEMORY_LOAD` 只记录 `hitCount`、`memoryKeys` 和摘要，不记录完整 `memoryValue`。
+
+边界说明：
+
+当前 Memory 第一版只支持人工维护的店铺级偏好或约束，不做自动长期记忆抽取、向量记忆、Summary Memory、跨商家共享记忆，也没有前端管理页面。

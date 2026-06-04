@@ -112,9 +112,15 @@ public class LangChain4jMerchantAgentModelClient implements MerchantAgentModelCl
                 .replace("{{toolName}}", request.getPromptContext().getSelectedToolName())
                 .replace("{{toolResult}}", toJson(request.getToolExecution().getData()))
                 .replace("{{ragKnowledge}}", buildRagKnowledge(request))
+                .replace("{{merchantMemory}}", buildMerchantMemory(request))
                 .replace("{{recommendation}}", request.getRecommendation() == null ? "暂无" : toJson(request.getRecommendation()))
                 .replace("{{constraints}}", buildConstraints(request))
                 .replace("{{outputRequirement}}", promptTemplateService.outputRequirement(request.getPromptContext().getIntent()));
+    }
+
+    private String buildMerchantMemory(AgentModelRequestDTO request) {
+        String merchantMemory = request.getPromptContext().getMerchantMemory();
+        return isBlank(merchantMemory) ? "暂无商家偏好记忆。" : merchantMemory;
     }
 
     private String buildRagKnowledge(AgentModelRequestDTO request) {

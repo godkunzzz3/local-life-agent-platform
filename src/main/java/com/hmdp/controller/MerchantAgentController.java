@@ -4,6 +4,7 @@ import com.hmdp.dto.AgentEvalRequest;
 import com.hmdp.dto.AgentKnowledgeDocRequest;
 import com.hmdp.dto.AgentKnowledgeEvaluateRequest;
 import com.hmdp.dto.AgentKnowledgeRetrieveRequest;
+import com.hmdp.dto.AgentMemoryRequest;
 import com.hmdp.dto.MerchantOperationReportRequest;
 import com.hmdp.dto.MerchantCampaignDraftRequest;
 import com.hmdp.dto.MerchantAgentChatRequest;
@@ -15,6 +16,7 @@ import com.hmdp.service.IMerchantAgentEvalService;
 import com.hmdp.service.IMerchantAgentKnowledgeDocService;
 import com.hmdp.service.IMerchantAgentKnowledgeEvalCaseService;
 import com.hmdp.service.IMerchantAgentKnowledgeEvalRunService;
+import com.hmdp.service.IMerchantAgentMemoryService;
 import com.hmdp.service.AgentWorkflowRecorderService;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -48,6 +50,8 @@ public class MerchantAgentController {
     private IMerchantAgentEvalService merchantAgentEvalService;
     @Resource
     private IMerchantAgentEvalRunService merchantAgentEvalRunService;
+    @Resource
+    private IMerchantAgentMemoryService merchantAgentMemoryService;
 
     /**
      * 查询 Agent 工具清单。
@@ -463,6 +467,42 @@ public class MerchantAgentController {
     @GetMapping("/shops/{shopId}/actions")
     public Result queryShopActions(@PathVariable("shopId") Long shopId) {
         return merchantAgentFacadeService.queryShopActions(shopId);
+    }
+
+    /**
+     * 查询当前店铺的 Agent Memory。
+     */
+    @GetMapping("/shops/{shopId}/memories")
+    public Result queryShopMemories(@PathVariable("shopId") Long shopId,
+                                    @RequestParam(value = "status", required = false) Integer status,
+                                    @RequestParam(value = "memoryType", required = false) String memoryType) {
+        return merchantAgentMemoryService.queryMemories(shopId, status, memoryType);
+    }
+
+    /**
+     * 新增人工维护的商家偏好 Memory。
+     */
+    @PostMapping("/shops/{shopId}/memories")
+    public Result createShopMemory(@PathVariable("shopId") Long shopId,
+                                   @RequestBody AgentMemoryRequest request) {
+        return merchantAgentMemoryService.createMemory(shopId, request);
+    }
+
+    /**
+     * 编辑、启用或禁用 Agent Memory。
+     */
+    @PutMapping("/memories/{memoryId}")
+    public Result updateShopMemory(@PathVariable("memoryId") Long memoryId,
+                                   @RequestBody AgentMemoryRequest request) {
+        return merchantAgentMemoryService.updateMemory(memoryId, request);
+    }
+
+    /**
+     * 逻辑删除 Agent Memory，第一版使用禁用实现。
+     */
+    @DeleteMapping("/memories/{memoryId}")
+    public Result deleteShopMemory(@PathVariable("memoryId") Long memoryId) {
+        return merchantAgentMemoryService.deleteMemory(memoryId);
     }
 
     /**

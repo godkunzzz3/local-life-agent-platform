@@ -17,6 +17,9 @@
 【商家问题】
 {{userMessage}}
 
+【商家偏好记忆】
+{{merchantMemory}}
+
 【检索到的运营知识】
 {{ragKnowledge}}
 

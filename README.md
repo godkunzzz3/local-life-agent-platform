@@ -595,6 +595,42 @@ mvn -B test
 
 这个设计的价值是让 Agent 不只是能跑 Demo，还能对安全边界做自动化回归。后续如果扩展真实模型评测或 LLM-as-Judge，也可以在这个 case/run/result 基础上继续叠加，而不是影响线上 Agent 主链路。
 
+### 近期开发记录：Memory 小闭环第一阶段：后端 + Prompt 接入
+
+功能目标：
+
+当前项目原本只有会话历史，能解决当前会话里的上下文延续；本阶段新增商家偏好记忆 Preference Memory，让 Agent 能在跨会话运营咨询中复用商家的长期偏好，例如活动风格、预算倾向和运营约束。
+
+业务逻辑：
+
+1. 商家可以通过后端接口维护店铺级 Memory，支持新增、编辑、启用/禁用和逻辑删除。
+2. 普通 Agent chat 会在权限校验通过后加载当前店铺启用的 Memory，并注入 Prompt。
+3. Tool Calling 会加载同一批启用 Memory，并注入 Tool Calling Prompt，但不改变模型可调用工具白名单。
+4. Workflow 会记录 `MEMORY_LOAD` step，只记录 `hitCount`、`memoryKeys` 和 `truncatedSummary`，不记录完整 `memoryValue`。
+
+工程设计：
+
+- 第一版只做人工维护的 Preference Memory，不做自动抽取、向量记忆和 Summary Memory，避免把一次性对话误固化成长期偏好。
+- Memory 只能代表商家偏好或运营约束，不是真实业务数据；当 Memory 和工具查询结果冲突时，以订单、优惠券、评价和店铺工具结果为准。
+- Memory 接口按 `shopId` 做商家权限校验，保存时限制字段长度，并拦截手机号、token、apiKey、password、authorization 等敏感信息。
+- Prompt 模板显式新增 `【商家偏好记忆】` 段，并写明“工具查询结果优先”。
+
+验证方式：
+
+- 本地执行 `/Applications/IntelliJ\ IDEA.app/Contents/plugins/maven/lib/maven3/bin/mvn test`。
+- 测试结果：`Tests run: 59, Failures: 0, Errors: 0, Skipped: 0`，`BUILD SUCCESS`。
+- 关键表：`tb_agent_memory`。
+- 关键类：`AgentMemory`、`AgentMemoryMapper`、`IMerchantAgentMemoryService`、`MerchantAgentMemoryServiceImpl`、`AgentMemoryDTO`、`AgentMemoryRequest`、`AgentMemoryPromptDTO`。
+- 关键接口：`GET /merchant-agent/shops/{shopId}/memories`、`POST /merchant-agent/shops/{shopId}/memories`、`PUT /merchant-agent/memories/{memoryId}`、`DELETE /merchant-agent/memories/{memoryId}`。
+- Prompt 模板：`prompt/merchant-agent/chat-frame.md`、`prompt/merchant-agent/tool-calling-frame.md`。
+- Workflow step：`MEMORY_LOAD`。
+
+面试讲法：
+
+可以把聊天历史和 Memory 分开讲：聊天历史解决的是当前会话里的上下文引用，例如“刚才那个活动”“它”；Memory 解决的是跨会话长期偏好，例如商家偏好周末活动、不希望折扣过大、活动文案要轻松。这样 Agent 不只是记住最近几条消息，而是能带着店铺级偏好做运营建议。
+
+第一版我没有做自动记忆抽取，也没有做向量记忆或 Summary Memory，而是选择人工维护的 Preference Memory。原因是长期记忆一旦写错，会持续污染后续 Prompt，所以先让来源可控；同时在 Prompt 中明确 Memory 不能覆盖工具查询结果，避免偏好影响真实经营数据判断。
+
 ## 面试讲解关键词
 
 这个项目可以重点讲下面几条主线：

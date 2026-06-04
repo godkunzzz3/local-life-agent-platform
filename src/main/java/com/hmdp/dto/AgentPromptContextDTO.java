@@ -83,4 +83,14 @@ public class AgentPromptContextDTO {
      * RAG 检索方式。当前第一版是 mysql_keyword，后续可以升级为 vector_search。
      */
     private String ragRetrievalMode;
+
+    /**
+     * 注入 Prompt 的商家偏好记忆文本。
+     */
+    private String merchantMemory;
+
+    /**
+     * 命中的商家偏好记忆数量。
+     */
+    private Integer memoryHitCount;
 }

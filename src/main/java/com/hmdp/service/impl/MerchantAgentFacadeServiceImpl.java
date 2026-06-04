@@ -25,6 +25,7 @@ import com.hmdp.service.IMerchantAgentMessageService;
 import com.hmdp.service.IMerchantAgentSessionService;
 import com.hmdp.service.IMerchantAgentSuggestionService;
 import com.hmdp.service.IMerchantAgentKnowledgeDocService;
+import com.hmdp.service.IMerchantAgentMemoryService;
 import com.hmdp.service.AgentWorkflowRecorderService;
 import com.hmdp.service.IMerchantCampaignDraftService;
 import com.hmdp.service.IMerchantService;
@@ -166,6 +167,8 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     private AgentWorkflowRecorderService agentWorkflowRecorderService;
     @Resource
     private MerchantAgentRulePolicyService rulePolicyService;
+    @Resource
+    private IMerchantAgentMemoryService agentMemoryService;
 
     @Override
     public Result queryAgentTools() {
@@ -1023,7 +1026,10 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         DateRange range = resolveDateRange(resolveChatDateRange(userMessage, request.getDateRange()));
         String toolName = resolveChatToolName(intent);
         List<Map<String, Object>> ragKnowledge = retrieveRagKnowledge(intent, userMessage);
-        AgentPromptContextDTO promptContext = buildPromptContext(shop, userMessage, intent, toolName, range, ragKnowledge);
+        List<AgentMemoryPromptDTO> memories = agentMemoryService.listPromptMemories(shopId);
+        String merchantMemory = agentMemoryService.buildMemoryPrompt(memories);
+        AgentPromptContextDTO promptContext = buildPromptContext(shop, userMessage, intent, toolName, range, ragKnowledge,
+                merchantMemory, memories.size());
         List<AgentFlowStepDTO> flowTrace = new ArrayList<>();
         flowTrace.add(buildFlowStep("receive_message", "接收商家问题", "success",
                 "收到商家输入：" + userMessage, null, null));
@@ -1053,6 +1059,7 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
                 flowTrace.get(0), "RECEIVE_MESSAGE", request, null);
         workflowStepOrder = recordWorkflowFlowStep(workflowRunId, sessionId, shopId, workflowStepOrder,
                 flowTrace.get(1), "RAG_RETRIEVE", userMessage, ragKnowledge);
+        workflowStepOrder = recordMemoryLoadStep(workflowRunId, sessionId, shopId, workflowStepOrder, memories);
         workflowStepOrder = recordWorkflowFlowStep(workflowRunId, sessionId, shopId, workflowStepOrder,
                 flowTrace.get(2), "INTENT_RESOLVE", userMessage, intent);
         workflowStepOrder = recordWorkflowFlowStep(workflowRunId, sessionId, shopId, workflowStepOrder,
@@ -1166,15 +1173,18 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         }
         Long sessionId = session.getId();
         List<AgentMessage> historyMessages = loadRecentNaturalMessages(sessionId);
+        List<AgentMemoryPromptDTO> memories = agentMemoryService.listPromptMemories(shopId);
+        String merchantMemory = agentMemoryService.buildMemoryPrompt(memories);
         saveMessage(sessionId, shopId, "user", userMessage, null, null, null);
         Long workflowRunId = agentWorkflowRecorderService.startRun(sessionId, shopId, merchantId,
                 "tool_calling_chat", "merchant_message", userMessage, "tool_calling_chat");
-        int workflowStepOrder = recordWorkflowStep(workflowRunId, sessionId, shopId, 1,
+        int workflowStepOrder = recordMemoryLoadStep(workflowRunId, sessionId, shopId, 1, memories);
+        workflowStepOrder = recordWorkflowStep(workflowRunId, sessionId, shopId, workflowStepOrder,
                 "tool_calling_start", "开始 Tool Calling", "TOOL_CALLING_START", null, "success",
                 request, null, "已开始 Tool Calling 对话", null);
 
         try {
-            Map<String, Object> toolCallingResult = toolCallingService.chat(shop, request, historyMessages);
+            Map<String, Object> toolCallingResult = toolCallingService.chat(shop, request, historyMessages, merchantMemory, memories);
             String reply = String.valueOf(toolCallingResult.getOrDefault("reply", toolCallingResult.get("answer")));
             toolCallingResult.put("sessionId", String.valueOf(sessionId));
             toolCallingResult.put("shopId", shopId);
@@ -1200,7 +1210,8 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
 
     private AgentPromptContextDTO buildPromptContext(Shop shop, String userMessage, String intent,
                                                      String toolName, DateRange range,
-                                                     List<Map<String, Object>> ragKnowledge) {
+                                                     List<Map<String, Object>> ragKnowledge,
+                                                     String merchantMemory, Integer memoryHitCount) {
         List<String> constraints = new ArrayList<>();
         constraints.add("先判断商家问题类型，再决定是否需要经营数据分析");
         constraints.add("身份、模型、能力说明类问题不要展开订单或店铺经营报告");
@@ -1223,7 +1234,9 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
                 .setConstraints(constraints)
                 .setOutputFormat(promptTemplateService.outputRequirement(intent))
                 .setRagKnowledge(ragKnowledge)
-                .setRagRetrievalMode(resolveRagRetrievalMode(ragKnowledge));
+                .setRagRetrievalMode(resolveRagRetrievalMode(ragKnowledge))
+                .setMerchantMemory(merchantMemory)
+                .setMemoryHitCount(memoryHitCount == null ? 0 : memoryHitCount);
     }
 
     private AgentFlowStepDTO buildFlowStep(String stepCode, String stepName, String status,
@@ -1253,6 +1266,21 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         agentWorkflowRecorderService.recordStep(runId, sessionId, shopId, stepOrder,
                 stepCode, stepName, nodeType, toolName, status, input, output, detail, null, costMillis);
         return stepOrder + 1;
+    }
+
+    private int recordMemoryLoadStep(Long runId, Long sessionId, Long shopId, int stepOrder,
+                                     List<AgentMemoryPromptDTO> memories) {
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("shopId", shopId);
+        input.put("status", 1);
+        input.put("memoryTypes", java.util.Arrays.asList("PREFERENCE", "CONSTRAINT"));
+        return recordWorkflowStep(runId, sessionId, shopId, stepOrder,
+                "MEMORY_LOAD", "加载商家记忆", "MEMORY_LOAD", null, "success",
+                input, agentMemoryService.buildMemoryLoadSummary(memories),
+                memories == null || memories.isEmpty()
+                        ? "本轮未命中启用商家记忆"
+                        : "本轮命中 " + memories.size() + " 条启用商家记忆",
+                null);
     }
 
     private int recordToolCallingWorkflowSteps(Long runId, Long sessionId, Long shopId, int stepOrder,

@@ -251,6 +251,28 @@ CREATE TABLE IF NOT EXISTS `tb_agent_eval_result` (
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '商家运营Agent行为评测明细表' ROW_FORMAT = Dynamic;
 
 -- ----------------------------
+-- Table structure for tb_agent_memory
+-- ----------------------------
+CREATE TABLE IF NOT EXISTS `tb_agent_memory` (
+  `id` bigint(20) UNSIGNED NOT NULL COMMENT '主键，使用 RedisIdWorker 生成',
+  `shop_id` bigint(20) UNSIGNED NOT NULL COMMENT '店铺ID',
+  `merchant_id` bigint(20) UNSIGNED NOT NULL COMMENT '商家用户ID',
+  `memory_type` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'PREFERENCE' COMMENT '记忆类型：PREFERENCE / CONSTRAINT / SUMMARY',
+  `memory_key` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '记忆键，例如 activity_style / budget_preference',
+  `memory_value` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '记忆内容，需限制长度并脱敏',
+  `confidence` decimal(5,2) DEFAULT 100.00 COMMENT '置信度，人工录入默认100',
+  `source_type` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'manual' COMMENT '来源：manual / chat / system',
+  `source_session_id` bigint(20) UNSIGNED DEFAULT NULL COMMENT '来源会话ID，人工录入可为空',
+  `status` tinyint(1) UNSIGNED NOT NULL DEFAULT 1 COMMENT '状态：1启用，0禁用',
+  `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_shop_status_type`(`shop_id`, `status`, `memory_type`) USING BTREE,
+  INDEX `idx_merchant_time`(`merchant_id`, `create_time`) USING BTREE,
+  INDEX `idx_source_session`(`source_session_id`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '商家运营Agent长期记忆表' ROW_FORMAT = Dynamic;
+
+-- ----------------------------
 -- Table structure for tb_agent_workflow_run
 -- ----------------------------
 CREATE TABLE IF NOT EXISTS `tb_agent_workflow_run` (

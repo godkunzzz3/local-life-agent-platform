@@ -14,6 +14,9 @@
 【检索到的运营知识】
 {{ragKnowledge}}
 
+【商家偏好记忆】
+{{merchantMemory}}
+
 【推荐动作】
 {{recommendation}}
 
