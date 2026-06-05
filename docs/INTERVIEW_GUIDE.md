@@ -714,3 +714,65 @@ A3：
 边界说明：
 
 本阶段没有实现自动记忆抽取、向量记忆、Summary Memory、Memory 版本历史和复杂图表。
+
+## Memory Candidate 后端第一阶段
+
+一句话介绍：
+
+本阶段新增候选记忆机制，系统可以根据商家输入生成 `PENDING` 状态的候选记忆，商家确认后才写入长期 Memory。
+
+设计取舍：
+
+第一版使用规则提取候选记忆，不调用真实大模型。这样可测试、稳定、成本低，并且避免模型误抽取或直接污染长期记忆。
+
+核心流程：
+
+1. 商家输入一段文本或对话片段。
+2. 后端通过规则提取器识别可能的偏好或约束。
+3. 系统保存为 `PENDING` 候选记忆。
+4. 商家可以编辑、确认、拒绝或删除。
+5. 确认前复用 Memory 校验，拦截敏感信息和非法长度。
+6. 确认成功后写入 `tb_agent_memory`，并将候选状态更新为 `CREATED`。
+7. Workflow 记录 `MEMORY_CANDIDATE_GENERATE` 和 `MEMORY_CANDIDATE_CONFIRM`。
+
+关键类、接口和表：
+
+- `tb_agent_memory_candidate`
+- `AgentMemoryCandidate`
+- `AgentMemoryCandidateMapper`
+- `IMerchantAgentMemoryCandidateService`
+- `MerchantAgentMemoryCandidateServiceImpl`
+- `MerchantAgentMemoryCandidateExtractor`
+- `AgentMemoryValidator`
+- `GET /merchant-agent/shops/{shopId}/memory-candidates`
+- `POST /merchant-agent/shops/{shopId}/memory-candidates/generate`
+- `PUT /merchant-agent/memory-candidates/{candidateId}`
+- `POST /merchant-agent/memory-candidates/{candidateId}/confirm`
+- `POST /merchant-agent/memory-candidates/{candidateId}/reject`
+- `DELETE /merchant-agent/memory-candidates/{candidateId}`
+
+可能追问：
+
+Q1：为什么不让模型直接写入 Memory？
+
+A1：
+长期 Memory 会影响后续所有 Agent 输出，如果模型误解了一次性表达并直接写入，后续会持续污染 Prompt。所以第一版只生成候选，必须由商家确认后才写入。
+
+Q2：候选记忆和正式 Memory 有什么区别？
+
+A2：
+候选记忆是待确认状态，不进入 Prompt；正式 Memory 是商家确认后的长期偏好，会进入普通 chat 和 Tool Calling Prompt。
+
+Q3：为什么第一版用规则提取，不用 LLM？
+
+A3：
+规则提取稳定、可测试、不依赖模型，适合先验证闭环。后续可以扩展为 LLM 生成候选，但仍然只能进入 `PENDING`，不能直接写入正式 Memory。
+
+Q4：如何保证候选确认安全？
+
+A4：
+确认前校验店铺权限、候选状态和 Memory 内容，复用 `AgentMemoryValidator` 拦截手机号、验证码、token、apiKey、password、authorization 等敏感信息，并通过事务保证写入 Memory 和候选状态一致。
+
+边界说明：
+
+本阶段没有实现 LLM 抽取候选、自动写入长期 Memory、向量记忆、Summary Memory 和前端候选记忆区域。

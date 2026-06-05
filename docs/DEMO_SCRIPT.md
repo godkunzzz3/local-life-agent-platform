@@ -446,3 +446,89 @@ DELETE /merchant-agent/memories/{memoryId}
 边界说明：
 
 当前 Memory 第一版只支持人工维护的店铺级偏好或约束，不做自动长期记忆抽取、向量记忆、Summary Memory、跨商家共享记忆，也不做复杂图表。
+
+## 11. Memory Candidate 后端演示
+
+本阶段暂无前端候选记忆页面，可通过接口演示 Memory Candidate 闭环。
+
+说明：
+
+本阶段新增候选记忆机制。系统可以基于规则从商家输入中提取潜在长期偏好，但只保存为 `PENDING` 候选，商家确认后才写入正式 Memory。
+
+接口 1：
+
+```text
+POST /merchant-agent/shops/{shopId}/memory-candidates/generate
+```
+
+用途：根据输入文本生成候选记忆。
+
+示例请求体：
+
+```json
+{
+  "text": "以后活动文案都轻松一点，库存不要超过100"
+}
+```
+
+预期：
+
+返回 `activity_style` 和 `stock_preference` 两类候选，状态为 `PENDING`。
+
+接口 2：
+
+```text
+GET /merchant-agent/shops/{shopId}/memory-candidates
+```
+
+用途：查询候选记忆。
+
+接口 3：
+
+```text
+PUT /merchant-agent/memory-candidates/{candidateId}
+```
+
+用途：编辑候选记忆。
+
+接口 4：
+
+```text
+POST /merchant-agent/memory-candidates/{candidateId}/confirm
+```
+
+用途：确认候选并写入正式 Memory。
+
+接口 5：
+
+```text
+POST /merchant-agent/memory-candidates/{candidateId}/reject
+```
+
+用途：拒绝候选。
+
+接口 6：
+
+```text
+DELETE /merchant-agent/memory-candidates/{candidateId}
+```
+
+用途：逻辑删除候选。
+
+演示步骤：
+
+1. 调用 generate 接口输入“以后活动文案都轻松一点，库存不要超过100”。
+2. 查看返回候选，确认状态为 `PENDING`。
+3. 调用候选查询接口。
+4. 编辑候选内容。
+5. 确认候选，写入正式 Memory。
+6. 查询 Memory 列表，确认正式 Memory 已生成。
+7. 尝试重复确认同一候选，说明非 `PENDING` 不能重复确认。
+8. 尝试生成包含手机号或 token 的候选，说明敏感信息会被拦截。
+
+讲解重点：
+
+- 候选记忆不会直接进入 Prompt。
+- 只有商家确认后的正式 Memory 才会进入 Prompt。
+- 第一版使用规则提取，不调用真实大模型。
+- 这个设计复用了 Human-in-the-loop 思路。

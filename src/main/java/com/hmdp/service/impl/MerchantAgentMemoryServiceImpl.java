@@ -9,6 +9,7 @@ import com.hmdp.dto.Result;
 import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.AgentMemory;
 import com.hmdp.mapper.AgentMemoryMapper;
+import com.hmdp.service.AgentMemoryValidator;
 import com.hmdp.service.IMerchantAgentMemoryService;
 import com.hmdp.service.IMerchantService;
 import com.hmdp.utils.RedisIdWorker;
@@ -22,7 +23,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Pattern;
 
 /**
  * 商家运营 Agent Memory 服务实现。
@@ -33,22 +33,15 @@ public class MerchantAgentMemoryServiceImpl
         extends ServiceImpl<AgentMemoryMapper, AgentMemory>
         implements IMerchantAgentMemoryService {
 
-    private static final int MEMORY_KEY_MAX_LENGTH = 128;
-    private static final int MEMORY_VALUE_MAX_LENGTH = 512;
     private static final int PROMPT_MEMORY_LIMIT = 10;
     private static final int PROMPT_MAX_LENGTH = 1200;
-
-    private static final String TYPE_PREFERENCE = "PREFERENCE";
-    private static final String TYPE_CONSTRAINT = "CONSTRAINT";
-
-    private static final Pattern PHONE_PATTERN = Pattern.compile("(?<!\\d)1\\d{10}(?!\\d)");
-    private static final Pattern SENSITIVE_PATTERN = Pattern.compile(
-            "(?i)(验证码|token|accessToken|refreshToken|authorization|apiKey|api_key|password|secret)");
 
     @Resource
     private IMerchantService merchantService;
     @Resource
     private RedisIdWorker redisIdWorker;
+    @Resource
+    private AgentMemoryValidator agentMemoryValidator;
 
     @Override
     public Result queryMemories(Long shopId, Integer status, String memoryType) {
@@ -65,7 +58,7 @@ public class MerchantAgentMemoryServiceImpl
             wrapper.eq("status", status);
         }
         if (!isBlank(memoryType)) {
-            wrapper.eq("memory_type", normalizeMemoryType(memoryType));
+            wrapper.eq("memory_type", memoryValidator().normalizeMemoryType(memoryType));
         }
         List<AgentMemory> memories = list(wrapper);
         Map<String, Object> result = new LinkedHashMap<>();
@@ -90,7 +83,7 @@ public class MerchantAgentMemoryServiceImpl
                 .setId(redisIdWorker.nextId("agent"))
                 .setShopId(shopId)
                 .setMerchantId(currentMerchantId())
-                .setMemoryType(normalizeMemoryType(request.getMemoryType()))
+                .setMemoryType(memoryValidator().normalizeMemoryType(request.getMemoryType()))
                 .setMemoryKey(request.getMemoryKey().trim())
                 .setMemoryValue(request.getMemoryValue().trim())
                 .setConfidence(new BigDecimal("100.00"))
@@ -118,7 +111,7 @@ public class MerchantAgentMemoryServiceImpl
         }
         AgentMemory update = new AgentMemory()
                 .setId(memoryId)
-                .setMemoryType(normalizeMemoryType(request.getMemoryType()))
+                .setMemoryType(memoryValidator().normalizeMemoryType(request.getMemoryType()))
                 .setMemoryKey(request.getMemoryKey().trim())
                 .setMemoryValue(request.getMemoryValue().trim())
                 .setStatus(resolveStatus(request.getStatus(), oldMemory.getStatus()));
@@ -153,7 +146,7 @@ public class MerchantAgentMemoryServiceImpl
             rows = query()
                     .eq("shop_id", shopId)
                     .eq("status", 1)
-                    .in("memory_type", TYPE_PREFERENCE, TYPE_CONSTRAINT)
+                    .in("memory_type", AgentMemoryValidator.TYPE_PREFERENCE, AgentMemoryValidator.TYPE_CONSTRAINT)
                     .orderByDesc("update_time")
                     .last("LIMIT " + PROMPT_MEMORY_LIMIT)
                     .list();
@@ -190,7 +183,7 @@ public class MerchantAgentMemoryServiceImpl
             if (memory == null || isBlank(memory.getMemoryValue()) || count >= PROMPT_MEMORY_LIMIT) {
                 continue;
             }
-            String line = "- [" + defaultString(memory.getMemoryType(), TYPE_PREFERENCE) + "] "
+            String line = "- [" + defaultString(memory.getMemoryType(), AgentMemoryValidator.TYPE_PREFERENCE) + "] "
                     + defaultString(memory.getMemoryKey(), "preference")
                     + "："
                     + memory.getMemoryValue().trim()
@@ -239,26 +232,7 @@ public class MerchantAgentMemoryServiceImpl
         if (request == null) {
             return "Memory 请求不能为空";
         }
-        String type = normalizeMemoryType(request.getMemoryType());
-        if (!TYPE_PREFERENCE.equals(type) && !TYPE_CONSTRAINT.equals(type)) {
-            return "第一版 Memory 只支持 PREFERENCE / CONSTRAINT";
-        }
-        if (isBlank(request.getMemoryKey())) {
-            return "memoryKey不能为空";
-        }
-        if (request.getMemoryKey().trim().length() > MEMORY_KEY_MAX_LENGTH) {
-            return "memoryKey长度不能超过128";
-        }
-        if (isBlank(request.getMemoryValue())) {
-            return "memoryValue不能为空";
-        }
-        if (request.getMemoryValue().trim().length() > MEMORY_VALUE_MAX_LENGTH) {
-            return "memoryValue长度不能超过512";
-        }
-        if (containsSensitive(request.getMemoryKey()) || containsSensitive(request.getMemoryValue())) {
-            return "Memory 不能包含手机号、验证码、token、apiKey、password、secret 等敏感信息";
-        }
-        return null;
+        return memoryValidator().validate(request);
     }
 
     private List<AgentMemoryDTO> toDtos(List<AgentMemory> memories) {
@@ -296,17 +270,6 @@ public class MerchantAgentMemoryServiceImpl
         return user == null ? 0L : user.getId();
     }
 
-    private boolean containsSensitive(String value) {
-        if (value == null) {
-            return false;
-        }
-        return PHONE_PATTERN.matcher(value).find() || SENSITIVE_PATTERN.matcher(value).find();
-    }
-
-    private String normalizeMemoryType(String value) {
-        return isBlank(value) ? TYPE_PREFERENCE : value.trim().toUpperCase();
-    }
-
     private Integer resolveStatus(Integer status, Integer defaultStatus) {
         if (status == null) {
             return defaultStatus == null ? 1 : defaultStatus;
@@ -328,5 +291,12 @@ public class MerchantAgentMemoryServiceImpl
 
     private boolean isBlank(String value) {
         return value == null || value.trim().isEmpty();
+    }
+
+    private AgentMemoryValidator memoryValidator() {
+        if (agentMemoryValidator == null) {
+            agentMemoryValidator = new AgentMemoryValidator();
+        }
+        return agentMemoryValidator;
     }
 }

@@ -4,6 +4,9 @@ import com.hmdp.dto.AgentEvalRequest;
 import com.hmdp.dto.AgentKnowledgeDocRequest;
 import com.hmdp.dto.AgentKnowledgeEvaluateRequest;
 import com.hmdp.dto.AgentKnowledgeRetrieveRequest;
+import com.hmdp.dto.AgentMemoryCandidateConfirmRequest;
+import com.hmdp.dto.AgentMemoryCandidateGenerateRequest;
+import com.hmdp.dto.AgentMemoryCandidateRequest;
 import com.hmdp.dto.AgentMemoryRequest;
 import com.hmdp.dto.MerchantOperationReportRequest;
 import com.hmdp.dto.MerchantCampaignDraftRequest;
@@ -16,6 +19,7 @@ import com.hmdp.service.IMerchantAgentEvalService;
 import com.hmdp.service.IMerchantAgentKnowledgeDocService;
 import com.hmdp.service.IMerchantAgentKnowledgeEvalCaseService;
 import com.hmdp.service.IMerchantAgentKnowledgeEvalRunService;
+import com.hmdp.service.IMerchantAgentMemoryCandidateService;
 import com.hmdp.service.IMerchantAgentMemoryService;
 import com.hmdp.service.AgentWorkflowRecorderService;
 import org.springframework.web.bind.annotation.*;
@@ -52,6 +56,8 @@ public class MerchantAgentController {
     private IMerchantAgentEvalRunService merchantAgentEvalRunService;
     @Resource
     private IMerchantAgentMemoryService merchantAgentMemoryService;
+    @Resource
+    private IMerchantAgentMemoryCandidateService merchantAgentMemoryCandidateService;
 
     /**
      * 查询 Agent 工具清单。
@@ -503,6 +509,59 @@ public class MerchantAgentController {
     @DeleteMapping("/memories/{memoryId}")
     public Result deleteShopMemory(@PathVariable("memoryId") Long memoryId) {
         return merchantAgentMemoryService.deleteMemory(memoryId);
+    }
+
+    /**
+     * 查询当前店铺的候选记忆。
+     */
+    @GetMapping("/shops/{shopId}/memory-candidates")
+    public Result queryShopMemoryCandidates(@PathVariable("shopId") Long shopId,
+                                            @RequestParam(value = "status", required = false) String status,
+                                            @RequestParam(value = "limit", required = false) Integer limit) {
+        return merchantAgentMemoryCandidateService.queryCandidates(shopId, status, limit);
+    }
+
+    /**
+     * 基于商家输入规则生成候选记忆，第一版不调用大模型。
+     */
+    @PostMapping("/shops/{shopId}/memory-candidates/generate")
+    public Result generateShopMemoryCandidates(@PathVariable("shopId") Long shopId,
+                                               @RequestBody AgentMemoryCandidateGenerateRequest request) {
+        return merchantAgentMemoryCandidateService.generateCandidates(shopId, request);
+    }
+
+    /**
+     * 编辑候选记忆。只有 PENDING 状态可以编辑。
+     */
+    @PutMapping("/memory-candidates/{candidateId}")
+    public Result updateMemoryCandidate(@PathVariable("candidateId") Long candidateId,
+                                        @RequestBody AgentMemoryCandidateRequest request) {
+        return merchantAgentMemoryCandidateService.updateCandidate(candidateId, request);
+    }
+
+    /**
+     * 商家确认候选记忆，确认后才写入正式 Memory。
+     */
+    @PostMapping("/memory-candidates/{candidateId}/confirm")
+    public Result confirmMemoryCandidate(@PathVariable("candidateId") Long candidateId,
+                                         @RequestBody(required = false) AgentMemoryCandidateConfirmRequest request) {
+        return merchantAgentMemoryCandidateService.confirmCandidate(candidateId, request);
+    }
+
+    /**
+     * 商家拒绝候选记忆。
+     */
+    @PostMapping("/memory-candidates/{candidateId}/reject")
+    public Result rejectMemoryCandidate(@PathVariable("candidateId") Long candidateId) {
+        return merchantAgentMemoryCandidateService.rejectCandidate(candidateId);
+    }
+
+    /**
+     * 逻辑删除候选记忆。第一版只隐藏 PENDING 候选，不物理删除。
+     */
+    @DeleteMapping("/memory-candidates/{candidateId}")
+    public Result deleteMemoryCandidate(@PathVariable("candidateId") Long candidateId) {
+        return merchantAgentMemoryCandidateService.deleteCandidate(candidateId);
     }
 
     /**

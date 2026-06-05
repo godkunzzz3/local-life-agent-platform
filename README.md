@@ -632,6 +632,43 @@ mvn -B test
 
 第一版我没有做自动记忆抽取，也没有做向量记忆或 Summary Memory，而是选择人工维护的 Preference Memory。原因是长期记忆一旦写错，会持续污染后续 Prompt，所以先让来源可控；同时在 Prompt 中明确 Memory 不能覆盖工具查询结果，避免偏好影响真实经营数据判断。
 
+### 近期开发记录：Memory Candidate 后端第一阶段
+
+功能目标：
+
+在人工维护 Memory 的基础上，引入“候选记忆”机制。系统可以根据商家输入生成可确认的 Memory 候选，但不会直接写入长期 Memory；只有商家确认后，后端才会写入 `tb_agent_memory`。
+
+业务逻辑：
+
+1. 商家提交一段输入文本或对话片段，后端通过规则提取潜在偏好或约束。
+2. 命中的内容保存为 `PENDING` 候选记忆，写入 `tb_agent_memory_candidate`，不会进入 Prompt。
+3. 商家可以编辑、确认、拒绝或删除候选。
+4. 确认候选前会复用正式 Memory 校验，拦截非法长度和敏感信息。
+5. 确认成功后才写入 `tb_agent_memory`，并将候选状态更新为 `CREATED`。
+6. 非 `PENDING` 候选不能再次编辑、确认、拒绝或删除，避免重复写入长期 Memory。
+
+工程设计：
+
+- 第一版采用规则提取候选记忆，不调用真实大模型，保证稳定、可测试、低成本。
+- Memory 内容校验抽到 `AgentMemoryValidator`，正式 Memory 和候选确认共用同一套安全边界。
+- 状态流转为 `PENDING -> CREATED / REJECTED / DELETED`，其中 confirm 写入正式 Memory 和候选状态更新使用事务。
+- Workflow 记录 `MEMORY_CANDIDATE_GENERATE` 和 `MEMORY_CANDIDATE_CONFIRM`，只记录 `candidateKeys`、`hitCount` 和摘要，不记录完整 `memoryValue`。
+
+验证方式：
+
+- 本地执行 `/Applications/IntelliJ\ IDEA.app/Contents/plugins/maven/lib/maven3/bin/mvn test`。
+- 测试结果：`Tests run: 79, Failures: 0, Errors: 0, Skipped: 0`，`BUILD SUCCESS`。
+- 关键表：`tb_agent_memory_candidate`、`tb_agent_memory`。
+- 关键类：`AgentMemoryCandidate`、`AgentMemoryCandidateMapper`、`IMerchantAgentMemoryCandidateService`、`MerchantAgentMemoryCandidateServiceImpl`、`MerchantAgentMemoryCandidateExtractor`、`AgentMemoryValidator`。
+- 关键接口：`GET /merchant-agent/shops/{shopId}/memory-candidates`、`POST /merchant-agent/shops/{shopId}/memory-candidates/generate`、`PUT /merchant-agent/memory-candidates/{candidateId}`、`POST /merchant-agent/memory-candidates/{candidateId}/confirm`、`POST /merchant-agent/memory-candidates/{candidateId}/reject`、`DELETE /merchant-agent/memory-candidates/{candidateId}`。
+- 关键测试：规则命中、候选生成、确认写入正式 Memory、非 `PENDING` 不能确认、敏感信息不能确认、跨商家不能确认、重复确认失败和 Workflow 失败不影响主流程。
+
+面试讲法：
+
+这个阶段可以讲成“Memory 的 Human-in-the-loop”。长期 Memory 会影响后续所有 Agent 输出，所以不能让模型直接写入。第一版先用规则从商家输入里提取候选偏好，保存为 `PENDING`，只有商家确认后才进入正式 Memory 和 Prompt。
+
+它和活动草稿确认是同一类安全边界：模型或规则可以提出建议，但写入长期状态或真实业务表之前必须有人确认。这样既保留 Agent 的自动化能力，也避免一次性表达、误判或敏感信息污染长期记忆。
+
 ## 面试讲解关键词
 
 这个项目可以重点讲下面几条主线：
