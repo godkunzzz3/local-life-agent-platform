@@ -607,6 +607,7 @@ mvn -B test
 2. 普通 Agent chat 会在权限校验通过后加载当前店铺启用的 Memory，并注入 Prompt。
 3. Tool Calling 会加载同一批启用 Memory，并注入 Tool Calling Prompt，但不改变模型可调用工具白名单。
 4. Workflow 会记录 `MEMORY_LOAD` step，只记录 `hitCount`、`memoryKeys` 和 `truncatedSummary`，不记录完整 `memoryValue`。
+5. 本阶段已在前端商家 Agent 工作台增加「商家记忆」轻量入口，支持人工查看、新增、编辑、启用/禁用和删除店铺级 Memory。Memory 仍然只作为商家偏好或运营约束进入 Prompt，不能覆盖工具查询得到的真实业务数据。
 
 工程设计：
 
