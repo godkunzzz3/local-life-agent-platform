@@ -447,9 +447,13 @@ DELETE /merchant-agent/memories/{memoryId}
 
 当前 Memory 第一版只支持人工维护的店铺级偏好或约束，不做自动长期记忆抽取、向量记忆、Summary Memory、跨商家共享记忆，也不做复杂图表。
 
-## 11. Memory Candidate 后端演示
+## 11. 候选记忆前端演示
 
-本阶段暂无前端候选记忆页面，可通过接口演示 Memory Candidate 闭环。
+入口：
+
+```text
+http://localhost:8080/merchant-agent.html
+```
 
 说明：
 
@@ -517,18 +521,21 @@ DELETE /merchant-agent/memory-candidates/{candidateId}
 
 演示步骤：
 
-1. 调用 generate 接口输入“以后活动文案都轻松一点，库存不要超过100”。
-2. 查看返回候选，确认状态为 `PENDING`。
-3. 调用候选查询接口。
-4. 编辑候选内容。
-5. 确认候选，写入正式 Memory。
-6. 查询 Memory 列表，确认正式 Memory 已生成。
-7. 尝试重复确认同一候选，说明非 `PENDING` 不能重复确认。
-8. 尝试生成包含手机号或 token 的候选，说明敏感信息会被拦截。
+1. 登录商家账号。
+2. 进入商家 Agent 工作台。
+3. 点击「商家记忆」入口。
+4. 在候选记忆区域输入“以后活动文案都轻松一点，库存不要超过100”。
+5. 点击「生成候选记忆」。
+6. 查看生成的 `PENDING` 候选，例如 `activity_style`、`stock_preference`。
+7. 编辑某条候选记忆。
+8. 点击「确认写入 Memory」。
+9. 查看正式 Memory 列表，确认新增记录。
+10. 对另一条 `PENDING` 候选执行拒绝或删除。
+11. 说明只有正式 Memory 会进入 Prompt，候选记忆不会直接影响 Agent 输出。
 
 讲解重点：
 
 - 候选记忆不会直接进入 Prompt。
 - 只有商家确认后的正式 Memory 才会进入 Prompt。
 - 第一版使用规则提取，不调用真实大模型。
-- 这个设计复用了 Human-in-the-loop 思路。
+- 候选记忆是 Human-in-the-loop 的 Memory 版本。
