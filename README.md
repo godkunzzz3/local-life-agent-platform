@@ -45,14 +45,41 @@ location /api {
 http://localhost:8080/merchant-agent.html
 ```
 
-## 项目亮点
+## 项目亮点总览
 
-- Redis 实战完整链路：缓存、分布式锁、Lua 秒杀、Stream 异步下单、BitMap 签到、Feed 流、GEO 附近商户。
-- 优惠券秒杀闭环：库存校验、一人一单、异步下单、订单券码、商家核销视角。
-- 达人探店与社交能力：发布探店笔记、点赞、点赞榜、关注、共同关注、关注 Feed。
-- 商家运营 Agent：自然语言对话、工具调用、Prompt 模板、RAG 知识库、向量化、评测用例、活动草稿确认。
-- Human-in-the-loop：Agent 只生成建议和草稿，创建真实优惠券/秒杀券必须由商家确认。
-- 可追踪能力：会话、消息、建议、草稿、操作日志、模型调用信息、RAG 召回信息均可记录和展示。
+### 1. Java / Redis 高并发业务主线
+
+- 保留黑马点评登录、店铺、优惠券、订单、签到、关注、Feed、GEO 附近商户和达人探店等业务。
+- 秒杀请求通过 Lua 原子完成库存校验、一人一单判断、库存预扣和 Redis Stream 入队，后台消费者异步落库。
+- 店铺缓存覆盖缓存穿透、逻辑过期、互斥锁重建和更新后删除缓存等典型一致性场景。
+- 使用 BitMap、Set、Sorted Set、GEO 等数据结构实现连续签到、关注关系、滚动分页 Feed 和附近商户查询。
+
+### 2. Agent Tool Calling 主线
+
+- 将店铺档案、订单统计、优惠券分析、评价分析和经营诊断等 Java 业务能力封装为 Agent Tool。
+- 通过 Tool Registry 维护工具元数据和模型可调用白名单，只向模型暴露只读工具。
+- 写操作不由模型直接执行：Agent 只能生成活动草稿，商家确认后才创建真实优惠券或秒杀券。
+- 对删除活动、退款、修改库存、支付状态和用户隐私查询等高风险输入进行规则拒绝和安全评测。
+
+### 3. RAG 与知识库评测主线
+
+- 支持商家知识文档维护、文本分片、Embedding、向量存储和 TopK 召回，并保留关键词召回兜底。
+- 召回链路包含规则重排、相似度阈值和 `no_reliable_hit` 质量闸门，低质量知识不会强行进入回答。
+- 提供召回调试、知识来源展示、评测用例维护、批量 RAG Eval 和历史运行记录。
+
+### 4. Agent 工程化主线
+
+- 使用 Workflow Run / Step 持久化记录 RAG、意图识别、工具选择、工具执行、模型回复和 Memory 加载等节点。
+- Agent Eval 复用线上规则策略，离线评测 intent、tool、confirm、risk 四类确定性行为，不调用真实大模型。
+- 自动化测试覆盖 Tool 白名单、活动草稿校验、Workflow、Agent Eval、Memory 和候选记忆安全边界。
+- GitHub Actions 在 `push` 和 `pull_request` 时自动执行 `mvn -B test`。
+
+### 5. Memory 与 Human-in-the-loop 主线
+
+- 支持店铺级 Preference Memory 人工新增、编辑、启用、禁用和删除，并注入普通对话与 Tool Calling Prompt。
+- Prompt 明确规定 Memory 只表示商家偏好或运营约束，真实订单、库存、优惠券等数据以工具查询结果为准。
+- 前端工作台提供正式 Memory 管理入口；Workflow 记录 `MEMORY_LOAD`，但不保存完整敏感内容。
+- 第一版通过规则生成候选记忆，候选不会直接进入 Prompt，只有商家编辑并确认后才写入正式 Memory。
 
 ## 项目截图
 
@@ -399,10 +426,10 @@ export DASHSCOPE_API_KEY=你的百炼APIKey
 
 ### 4. 启动后端
 
-本机如果没有全局 Maven，可以使用 IntelliJ 自带 Maven：
+使用 Maven 启动：
 
 ```bash
-/Applications/IntelliJ\ IDEA.app/Contents/plugins/maven/lib/maven3/bin/mvn spring-boot:run
+mvn spring-boot:run
 ```
 
 后端地址：
@@ -413,10 +440,10 @@ http://localhost:8081
 
 ### 5. 启动前端
 
-前端静态页面位于另一个目录：
+前端代码位于独立仓库，按前端 README 将静态文件放入 Nginx 站点目录：
 
 ```text
-/Users/qjkzzz3/Documents/nginx-1.18.0/html/hmdp
+https://github.com/godkunzzz3/hmdp-web
 ```
 
 Nginx 默认访问：
@@ -547,7 +574,7 @@ mvn -B test
 
 验证方式：
 
-- 本地执行 `/Applications/IntelliJ\ IDEA.app/Contents/plugins/maven/lib/maven3/bin/mvn test`。
+- 本地执行 `mvn test`。
 - 测试结果：`Tests run: 44, Failures: 0, Errors: 0, Skipped: 0`，`BUILD SUCCESS`。
 - 关键类：`MerchantAgentRulePolicyService`、`MerchantAgentEvalServiceImpl`。
 - 关键接口：`GET /merchant-agent/eval-cases`、`POST /merchant-agent/evaluate-agent`、`GET /merchant-agent/eval-runs`、`GET /merchant-agent/eval-runs/{runId}`。
@@ -583,7 +610,7 @@ mvn -B test
 
 验证方式：
 
-- 本地执行 `/Applications/IntelliJ\ IDEA.app/Contents/plugins/maven/lib/maven3/bin/mvn test`。
+- 本地执行 `mvn test`。
 - 测试结果：`Tests run: 44, Failures: 0, Errors: 0, Skipped: 0`，`BUILD SUCCESS`。
 - 关键表：`tb_agent_eval_case`、`tb_agent_eval_run`、`tb_agent_eval_result`。
 - 关键类：`MerchantAgentEvalServiceImpl`、`MerchantAgentEvalCaseServiceImpl`、`MerchantAgentEvalRunServiceImpl`、`MerchantAgentRulePolicyService`。
@@ -618,7 +645,7 @@ mvn -B test
 
 验证方式：
 
-- 本地执行 `/Applications/IntelliJ\ IDEA.app/Contents/plugins/maven/lib/maven3/bin/mvn test`。
+- 本地执行 `mvn test`。
 - 测试结果：`Tests run: 59, Failures: 0, Errors: 0, Skipped: 0`，`BUILD SUCCESS`。
 - 关键表：`tb_agent_memory`。
 - 关键类：`AgentMemory`、`AgentMemoryMapper`、`IMerchantAgentMemoryService`、`MerchantAgentMemoryServiceImpl`、`AgentMemoryDTO`、`AgentMemoryRequest`、`AgentMemoryPromptDTO`。
@@ -657,7 +684,7 @@ mvn -B test
 
 验证方式：
 
-- 本地执行 `/Applications/IntelliJ\ IDEA.app/Contents/plugins/maven/lib/maven3/bin/mvn test`。
+- 本地执行 `mvn test`。
 - 测试结果：`Tests run: 79, Failures: 0, Errors: 0, Skipped: 0`，`BUILD SUCCESS`。
 - 关键表：`tb_agent_memory_candidate`、`tb_agent_memory`。
 - 关键类：`AgentMemoryCandidate`、`AgentMemoryCandidateMapper`、`IMerchantAgentMemoryCandidateService`、`MerchantAgentMemoryCandidateServiceImpl`、`MerchantAgentMemoryCandidateExtractor`、`AgentMemoryValidator`。
@@ -685,20 +712,13 @@ mvn -B test
 9. RAG 为什么需要质量闸门和召回评测。
 10. Prompt 版本和模型调用日志如何帮助排查效果变化。
 
-## 当前状态
+## 当前状态与边界
 
-当前项目已经具备可演示的完整主线：
+当前项目已经形成可演示的五条主线：Java / Redis 业务、Agent Tool Calling、RAG 与评测、Workflow / Agent Eval、Memory / Human-in-the-loop。
 
-- 用户端本地生活业务闭环
-- Redis 实战功能闭环
-- 商家端 Agent 工作台
-- RAG 知识库与评测闭环
+当前边界：
 
-后续可继续增强：
-
-- 增加单元测试和集成测试
-- 增加 Docker Compose 一键启动
-- 增加线上部署脚本
-- 增加 RAG 评测历史记录
-- 增加知识文档分片与重排序
-- 增加更完整的商家权限体系
+- Agent Eval 第一版评测确定性规则行为，不调用真实模型做裁判。
+- Memory Candidate 第一版由规则提取，模型不会自动写入长期 Memory。
+- 尚未实现向量 Memory、Summary Memory、Multi-Agent、MCP 和可配置 Workflow 引擎。
+- 仓库未提供 Docker Compose 一键编排，复现时需分别启动 MySQL、Redis、Spring Boot 和 Nginx 前端。
