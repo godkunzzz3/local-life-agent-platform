@@ -1,6 +1,6 @@
-# 黑马点评升级版：本地生活商家智能运营 Agent 平台
+# 本地生活商家智能运营 Agent 平台
 
-这是一个基于黑马点评实战项目扩展的本地生活平台后端项目。项目保留了用户端店铺、优惠券、秒杀、探店、关注、签到等核心业务，并在此基础上新增了面向商家的智能运营 Agent 模块。
+这是一个面向本地生活商家的智能运营 Agent 平台，底层覆盖优惠券秒杀、缓存、异步下单、探店社交等 Java/Redis 业务链路，上层将商家运营分析、RAG 知识问答、Tool Calling、Workflow、Agent Eval 和 Preference Memory 整合成一个可观测、可评测、有人审的 Agent 工程化系统。
 
 项目目标不是单纯做一个聊天机器人，而是把已有本地生活业务能力封装成 Agent 可调用的工具，让 Agent 基于真实业务数据为商家生成可执行、可追踪、可确认的运营建议。
 
@@ -49,7 +49,7 @@ http://localhost:8080/merchant-agent.html
 
 ### 1. Java / Redis 高并发业务主线
 
-- 保留黑马点评登录、店铺、优惠券、订单、签到、关注、Feed、GEO 附近商户和达人探店等业务。
+- 覆盖本地生活平台中的登录、店铺、优惠券、订单、签到、关注、Feed、GEO 附近商户和达人探店等业务。
 - 秒杀请求通过 Lua 原子完成库存校验、一人一单判断、库存预扣和 Redis Stream 入队，后台消费者异步落库。
 - 店铺缓存覆盖缓存穿透、逻辑过期、互斥锁重建和更新后删除缓存等典型一致性场景。
 - 使用 BitMap、Set、Sorted Set、GEO 等数据结构实现连续签到、关注关系、滚动分页 Feed 和附近商户查询。
@@ -369,7 +369,7 @@ src/main/resources
 
 核心 SQL 文件：
 
-- `src/main/resources/db/hmdp.sql`：黑马点评基础业务表。
+- `src/main/resources/db/hmdp.sql`：本地生活点评类基础业务表。
 - `src/main/resources/db/merchant_schema.sql`：商家账号相关表。
 - `src/main/resources/db/agent_schema.sql`：Agent 会话、消息、建议、草稿、知识库、评测用例等表。
 - `src/main/resources/db/seed_shop_demo.sql`：店铺演示数据。

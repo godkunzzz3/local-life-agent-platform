@@ -2,7 +2,7 @@
 
 ## 1. 项目定位
 
-“本地生活商家智能运营 Agent 平台”基于黑马点评业务扩展。项目一方面保留 Java / Redis 的用户端业务与高并发场景，另一方面增加面向商家的 Agent 工作台，让自然语言请求能够安全地连接订单、优惠券、评价、知识库和运营活动。
+本项目是一个面向本地生活商家的智能运营 Agent 平台。底层覆盖优惠券秒杀、缓存、异步下单、探店社交等 Java / Redis 业务链路，上层将商家运营分析、RAG 知识问答、Tool Calling、Workflow、Agent Eval 和 Preference Memory 整合成一个可观测、可评测、有人审的 Agent 工程化系统。
 
 它不是普通聊天机器人。核心价值是把模型放进真实业务系统，并通过工具白名单、Human-in-the-loop、Workflow、Eval 和 Memory 安全边界控制执行风险。
 
@@ -89,12 +89,12 @@ Agent Eval 第一版复用 `MerchantAgentRulePolicyService`，不调用真实大
 
 ## 10. 简历表述
 
-- 基于 Spring Boot、MyBatis-Plus、MySQL 与 Redis 扩展黑马点评，使用 Lua 与 Redis Stream 实现秒杀原子校验、异步下单及一人一单控制。
-- 将店铺、订单、优惠券和评价能力封装为 Agent Tool，通过 Tool Registry 控制只读白名单，写操作采用活动草稿和商家确认机制。
-- 构建支持分片、Embedding、TopK、关键词兜底、重排和阈值控制的商家知识库 RAG，并实现批量 RAG Eval。
-- 设计 Workflow Run / Step、操作审计和脱敏记录，实现 Agent 执行回放与问题定位，且审计失败不阻断主流程。
-- 实现 Agent Eval 与安全用例回归，评测意图、工具、人工确认和风险等级，不依赖真实模型。
-- 实现 Preference Memory、Prompt 注入和候选确认闭环，确保长期记忆经过权限、敏感信息和人工确认校验。
+本地生活商家智能运营 Agent 平台｜Java / Spring Boot / Redis / MySQL / Vue / LangChain4j
+
+- 基于 Spring Boot、Redis、MySQL 与 Vue2 实现本地生活商家运营平台，覆盖优惠券秒杀、探店社交、商家运营分析和 Agent 工作台。
+- 使用 Lua 脚本与 Redis Stream 实现秒杀资格原子校验、异步下单和一人一单控制，降低高并发下数据库直接写入压力。
+- 将商家运营查询、订单分析、优惠券分析、评价分析等业务 Service 封装为 Agent Tool，通过 Tool Registry 建立只读工具白名单，写操作采用草稿 + 商家确认机制。
+- 构建 RAG、Workflow、Agent Eval、Preference Memory 与候选记忆确认闭环，实现商家知识问答、执行过程回放、行为评测和长期记忆可控写入。
 
 ## 能力边界
 

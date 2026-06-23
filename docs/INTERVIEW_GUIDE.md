@@ -2,13 +2,13 @@
 
 ## 1. 项目一句话介绍
 
-这是一个基于黑马点评业务扩展的本地生活商家智能运营 Agent 平台：既保留秒杀、缓存、Feed 等 Java / Redis 业务，又让商家通过自然语言完成经营分析、知识问答、活动草稿和偏好记忆管理，而不是一个只会聊天的机器人。
+这是一个面向本地生活商家的智能运营 Agent 平台，底层覆盖优惠券秒杀、缓存、异步下单、探店社交等 Java/Redis 业务链路，上层将商家运营分析、RAG 知识问答、Tool Calling、Workflow、Agent Eval 和 Preference Memory 整合成一个可观测、可评测、有人审的 Agent 工程化系统。
 
 ## 2. 为什么做这个项目
 
-原始黑马点评适合展示 Spring Boot、MyBatis-Plus 和 Redis 实战，但 AI 应用开发岗位还会关注 Tool Calling、RAG、Prompt、安全边界、评测和可观测性。
+本地生活商家运营场景同时包含高并发交易、内容社交、运营分析和知识问答，适合作为 Java + Agent 工程化项目载体。
 
-本项目没有丢掉原有业务，而是在真实订单、优惠券、评价和店铺数据上增加 Agent 工程层。商家可以用自然语言查询经营情况、调用只读工具、参考知识库、生成待确认活动草稿，并管理长期运营偏好。
+项目以真实订单、优惠券、评价和店铺数据为业务底座，在其上增加 Agent 工程层。商家可以用自然语言查询经营情况、调用只读工具、参考知识库、生成待确认活动草稿，并管理长期运营偏好。
 
 核心目标是证明：我不仅能接入模型，还能把模型放进可控制、可测试、可追踪的 Java 业务系统。
 
@@ -64,7 +64,7 @@ MerchantAgentFacadeServiceImpl
         +-- Eval：RAG Eval / Agent Eval
         |
         v
-黑马点评业务 Service -> MySQL / Redis
+本地生活业务 Service -> MySQL / Redis
 ```
 
 普通业务接口继续服务用户端；Agent Facade 负责把会话、知识、工具、记忆和审计组合起来。模型不能绕过 Service 直接访问数据库。
@@ -194,18 +194,18 @@ Memory 以“商家偏好记忆”段进入 Prompt。系统明确规定：Memory
 
 ## 11. 简历 bullet
 
-- 基于 Spring Boot、MyBatis-Plus、MySQL 与 Redis 扩展黑马点评业务，使用 Lua 与 Redis Stream 实现秒杀资格原子校验、异步下单及一人一单控制。
-- 将店铺、订单、优惠券、评价等业务 Service 封装为 Agent Tool，通过 Tool Registry 建立只读白名单，写操作采用活动草稿与商家确认机制隔离模型和真实数据库。
-- 构建商家知识库 RAG 链路，支持文档分片、Embedding、TopK 召回、关键词兜底、规则重排、相似度阈值和批量 RAG Eval。
-- 设计 Workflow Run / Step 持久化与脱敏审计，记录 RAG、意图、工具、模型回复和 Memory 加载节点，且审计异常不阻断 Agent 主流程。
-- 实现基于统一规则策略的 Agent Eval，离线评测意图、工具、人工确认和风险等级，并用安全用例验证高风险操作边界。
-- 实现店铺级 Preference Memory 与候选确认闭环，支持 Prompt 注入、工具事实优先、敏感信息拦截及候选确认后写入长期记忆。
+本地生活商家智能运营 Agent 平台｜Java / Spring Boot / Redis / MySQL / Vue / LangChain4j
+
+- 基于 Spring Boot、Redis、MySQL 与 Vue2 实现本地生活商家运营平台，覆盖优惠券秒杀、探店社交、商家运营分析和 Agent 工作台。
+- 使用 Lua 脚本与 Redis Stream 实现秒杀资格原子校验、异步下单和一人一单控制，降低高并发下数据库直接写入压力。
+- 将商家运营查询、订单分析、优惠券分析、评价分析等业务 Service 封装为 Agent Tool，通过 Tool Registry 建立只读工具白名单，写操作采用草稿 + 商家确认机制。
+- 构建 RAG、Workflow、Agent Eval、Preference Memory 与候选记忆确认闭环，实现商家知识问答、执行过程回放、行为评测和长期记忆可控写入。
 
 ## 12. 高频追问 Q&A
 
-### Q1：你的项目和普通黑马点评有什么区别？
+### Q1：这是不是黑马点评项目？
 
-普通版本重点是业务 CRUD 和 Redis。本项目保留这些能力，并增加 Tool Calling、RAG、Workflow、Agent Eval、Memory 和 Human-in-the-loop，把真实业务 Service 组织成可控的 Agent 系统。
+业务域参考了本地生活点评类场景，但我主要做的是商家运营 Agent 平台化扩展。Java/Redis 业务链路是业务底座，重点工作是 Tool Calling、RAG Eval、Workflow、Agent Eval、Preference Memory 和候选记忆确认这些 Agent 工程化能力。
 
 ### Q2：为什么不用模型直接操作数据库？
 
