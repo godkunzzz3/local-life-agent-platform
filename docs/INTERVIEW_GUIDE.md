@@ -16,9 +16,11 @@
 
 ### 后端
 
-- Java 8、Spring Boot 2.3.12
+- JDK 17、Spring Boot 2.3.12
 - MyBatis-Plus、MySQL
 - Hutool、Lombok
+
+基础业务代码延续 Java 8 生态，但当前 DashScope / Agent 依赖需要 Java 17 字节码兼容，因此构建、测试和运行环境统一推荐 JDK 17。
 
 ### 前端
 
@@ -41,6 +43,7 @@
 
 - JUnit、Mockito、Maven
 - GitHub Actions 自动执行 `mvn -B test`
+- MySQL 密码和模型 Key 使用环境变量，图片上传目录通过 `HMDP_IMAGE_UPLOAD_DIR` 或 JVM 参数配置
 
 ## 4. 核心架构
 

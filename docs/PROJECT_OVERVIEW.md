@@ -8,11 +8,15 @@
 
 ## 2. 技术栈
 
-- 后端：Java 8、Spring Boot 2.3.12、MyBatis-Plus、MySQL
+- 后端：JDK 17、Spring Boot 2.3.12、MyBatis-Plus、MySQL
 - Redis：String、Set、Sorted Set、BitMap、GEO、Lua、Stream、缓存重建互斥锁
 - AI：LangChain4j、DashScope / 通义千问、Embedding、Prompt 模板
 - 前端：Vue 2、Element UI、Axios、Nginx
 - 测试与工程化：JUnit、Mockito、Maven、GitHub Actions
+
+基础业务代码源于 Java 8 / Spring Boot 2.3 生态；由于当前 Agent / DashScope 依赖包含 Java 17 字节码，项目统一推荐使用 JDK 17 构建和运行。
+
+本地配置通过环境变量提供：`MYSQL_PASSWORD` 用于 MySQL 密码，`HMDP_IMAGE_UPLOAD_DIR` 或 JVM 参数 `-Dhmdp.image-upload-dir=/your/path/` 用于图片上传目录。仓库不应提交真实数据库密码、API Key、Token 或用户隐私数据；SQL 中的手机号格式数据仅用于本地演示初始化。
 
 ## 3. 核心业务能力
 

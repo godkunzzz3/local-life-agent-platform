@@ -22,14 +22,16 @@
 后端项目：
 
 ```text
-/Users/qjkzzz3/Desktop/heimadp-project/hm-dianping
+hm-dianping
 ```
 
 前端项目：
 
 ```text
-/Users/qjkzzz3/Documents/nginx-1.18.0/html/hmdp
+hmdp-web
 ```
+
+本地路径请按个人开发环境调整。
 
 后端核心文档：
 
@@ -161,10 +163,10 @@ confirmCampaignDraft
 换号前应执行：
 
 ```bash
-cd /Users/qjkzzz3/Desktop/heimadp-project/hm-dianping
+cd hm-dianping
 git status
 
-cd /Users/qjkzzz3/Documents/nginx-1.18.0/html/hmdp
+cd hmdp-web
 git status
 ```
 
@@ -175,14 +177,14 @@ git status
 后端常用启动：
 
 ```bash
-cd /Users/qjkzzz3/Desktop/heimadp-project/hm-dianping
-/Applications/IntelliJ\ IDEA.app/Contents/plugins/maven/lib/maven3/bin/mvn spring-boot:run
+cd hm-dianping
+mvn spring-boot:run
 ```
 
 如果 8081 被占用，可以临时换端口：
 
 ```bash
-/Applications/IntelliJ\ IDEA.app/Contents/plugins/maven/lib/maven3/bin/mvn spring-boot:run -Dspring-boot.run.arguments=--server.port=18081
+mvn spring-boot:run -Dspring-boot.run.arguments=--server.port=18081
 ```
 
 查看端口占用：
@@ -200,11 +202,17 @@ http://localhost:8080/merchant-agent.html
 
 ## 7. 环境变量
 
-模型 API Key 使用环境变量配置，不要写死进代码：
+推荐使用 JDK 17 构建和运行。基础业务代码源于 Java 8 / Spring Boot 2.3 生态，但当前 DashScope / Agent 依赖需要 Java 17 兼容。
+
+数据库密码、模型 API Key 和图片上传目录使用环境变量配置，不要写死进代码：
 
 ```bash
+export MYSQL_PASSWORD='你的本地 MySQL 密码'
 export DASHSCOPE_API_KEY='你的key'
+export HMDP_IMAGE_UPLOAD_DIR='/your/path/'
 ```
+
+图片目录也可以通过 JVM 参数 `-Dhmdp.image-upload-dir=/your/path/` 配置。
 
 如果通过 IntelliJ 启动，需要在 Run/Debug Configuration 的 Environment variables 中配置。
 

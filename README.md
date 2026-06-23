@@ -97,7 +97,7 @@ http://localhost:8080/merchant-agent.html
 
 ## 技术栈
 
-- Java 8
+- JDK 17（业务代码源于 Java 8 / Spring Boot 2.3 生态，当前 Agent / DashScope 依赖使用 JDK 17 构建和运行）
 - Spring Boot 2.3.12
 - MyBatis-Plus
 - MySQL
@@ -382,9 +382,12 @@ src/main/resources
 
 需要本地启动：
 
+- JDK 17
 - MySQL
 - Redis
 - Nginx
+
+当前项目的基础业务代码源于 Java 8 生态，但 DashScope / Agent 相关依赖包含 Java 17 字节码，因此推荐统一使用 JDK 17 构建和运行。
 
 默认配置见 `src/main/resources/application.yaml`：
 
@@ -395,11 +398,30 @@ spring:
   datasource:
     url: jdbc:mysql://127.0.0.1:3306/hmdp?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     username: root
-    password: <your-mysql-password>
+    password: ${MYSQL_PASSWORD:}
   redis:
     host: 127.0.0.1
     port: 6379
 ```
+
+本地启动前通过环境变量提供 MySQL 密码，不要把真实密码写入仓库：
+
+```bash
+export MYSQL_PASSWORD='你的本地 MySQL 密码'
+```
+
+图片上传目录可使用环境变量或 JVM 参数配置：
+
+```bash
+export HMDP_IMAGE_UPLOAD_DIR='/your/path/'
+mvn spring-boot:run
+```
+
+```bash
+mvn spring-boot:run -Dspring-boot.run.jvmArguments="-Dhmdp.image-upload-dir=/your/path/"
+```
+
+未配置时默认写入项目相对目录 `uploads/images/`。生产或本地联调时，应将配置目录映射到 Nginx 可访问的 `/imgs/` 静态资源目录。
 
 ### 2. 导入数据库
 
@@ -423,6 +445,8 @@ export DASHSCOPE_API_KEY=你的百炼APIKey
 ```
 
 不要把 API Key 提交到 Git。
+
+同样不要提交真实数据库密码、Redis 密码、Token、Authorization 信息或 `.env` 文件。仓库 SQL 中的手机号格式数据仅用于本地演示初始化，不应使用真实用户数据。
 
 ### 4. 启动后端
 
