@@ -3,6 +3,7 @@ package com.hmdp.tool;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hmdp.dto.AgentRecommendationDTO;
+import com.hmdp.dto.AgentToolDefinitionDTO;
 import com.hmdp.dto.AgentToolExecutionRequestDTO;
 import com.hmdp.dto.AgentToolExecutionResultDTO;
 import com.hmdp.entity.Blog;
@@ -39,6 +40,8 @@ public class AgentToolExecutor {
     private VoucherAgentTool voucherAgentTool;
     @Resource
     private ReviewAgentTool reviewAgentTool;
+    @Resource
+    private AgentToolRegistry agentToolRegistry;
     @Resource
     private ObjectMapper objectMapper;
 
@@ -106,6 +109,85 @@ public class AgentToolExecutor {
             data.put("recommendations", recommendations == null ? Collections.emptyList() : recommendations);
             return data;
         });
+    }
+
+    /**
+     * 按明确的只读工具名执行工具。
+     *
+     * <p>该方法提供给 Skill 编排层复用原子 Tool 能力，不改变现有 chat/tool-chat 主流程。
+     * 写工具和草稿工具不在这里开放。</p>
+     */
+    public AgentToolExecutionResultDTO executeReadonlyTool(String toolName, AgentToolExecutionRequestDTO request) {
+        return execute(toolName, request, () -> {
+            validateReadonlyTool(toolName);
+            Long shopId = request == null ? null : request.getShopId();
+            if (shopId == null) {
+                throw new IllegalArgumentException("shopId不能为空");
+            }
+            if ("shop_profile_tool".equals(toolName)) {
+                Shop shop = shopAgentTool.getShop(shopId);
+                if (shop == null) {
+                    throw new IllegalArgumentException("店铺不存在");
+                }
+                return shopAgentTool.buildShopProfile(shop);
+            }
+            if (!"order_analysis_tool".equals(toolName)
+                    && !"voucher_analysis_tool".equals(toolName)
+                    && !"review_content_tool".equals(toolName)) {
+                throw new IllegalArgumentException("不支持的只读工具：" + toolName);
+            }
+
+            List<Voucher> vouchers = voucherAgentTool.queryShopVouchers(shopId);
+            List<Long> voucherIds = vouchers.stream().map(Voucher::getId).collect(Collectors.toList());
+
+            if ("order_analysis_tool".equals(toolName)) {
+                Map<Long, Voucher> voucherMap = vouchers.stream().collect(Collectors.toMap(Voucher::getId, voucher -> voucher));
+                List<VoucherOrder> orders = orderAgentTool.queryOrders(voucherIds, request.getStartTime());
+                return orderAgentTool.buildOrderAnalysis(orders, voucherMap);
+            }
+
+            if ("voucher_analysis_tool".equals(toolName)) {
+                List<SeckillVoucher> seckillVouchers = voucherAgentTool.querySeckillVouchers(voucherIds);
+                return voucherAgentTool.buildVoucherAnalysis(vouchers, seckillVouchers);
+            }
+
+            if ("review_content_tool".equals(toolName)) {
+                List<Blog> blogs = reviewAgentTool.queryShopBlogs(shopId);
+                List<BlogComments> comments = reviewAgentTool.queryComments(blogs);
+                return reviewAgentTool.buildReviewAnalysis(blogs, comments);
+            }
+
+            throw new IllegalArgumentException("不支持的只读工具：" + toolName);
+        });
+    }
+
+    private void validateReadonlyTool(String toolName) {
+        if (toolName == null || toolName.trim().isEmpty()) {
+            throw new IllegalArgumentException("工具名不能为空");
+        }
+        AgentToolDefinitionDTO definition = findToolDefinition(toolName);
+        if (definition == null) {
+            throw new IllegalArgumentException("工具不存在或未注册：" + toolName);
+        }
+        if (!"readonly".equals(definition.getToolType())
+                || !"read".equals(definition.getAccessLevel())
+                || Boolean.TRUE.equals(definition.getWriteDatabase())
+                || Boolean.TRUE.equals(definition.getRequireMerchantConfirm())) {
+            throw new IllegalArgumentException("只读执行入口拒绝非只读工具：" + toolName);
+        }
+    }
+
+    private AgentToolDefinitionDTO findToolDefinition(String toolName) {
+        List<AgentToolDefinitionDTO> definitions = agentToolRegistry.listDefinitions();
+        if (definitions == null) {
+            return null;
+        }
+        for (AgentToolDefinitionDTO definition : definitions) {
+            if (definition != null && toolName.equals(definition.getName())) {
+                return definition;
+            }
+        }
+        return null;
     }
 
     private AgentToolExecutionResultDTO execute(String toolName, Object args, Supplier<Object> supplier) {
