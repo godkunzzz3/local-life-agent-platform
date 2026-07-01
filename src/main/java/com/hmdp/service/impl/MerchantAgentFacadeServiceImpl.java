@@ -29,6 +29,7 @@ import com.hmdp.service.IMerchantAgentMemoryService;
 import com.hmdp.service.AgentWorkflowRecorderService;
 import com.hmdp.service.IMerchantCampaignDraftService;
 import com.hmdp.service.IMerchantService;
+import com.hmdp.service.MerchantCampaignDraftValidator;
 import com.hmdp.tool.OrderAgentTool;
 import com.hmdp.tool.ReviewAgentTool;
 import com.hmdp.tool.ShopAgentTool;
@@ -89,42 +90,6 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
      */
     private static final int SESSION_TITLE_MAX_LENGTH = 40;
 
-    /**
-     * 草稿标题对应 tb_agent_campaign_draft.title，数据库长度为 128。
-     */
-    private static final int DRAFT_TITLE_MAX_LENGTH = 128;
-
-    /**
-     * 副标题会同步到真实优惠券 tb_voucher.sub_title，这里按更短的展示文案控制。
-     */
-    private static final int DRAFT_SUB_TITLE_MAX_LENGTH = 120;
-
-    /**
-     * 真实优惠券 tb_voucher.rules 长度为 1024，确认创建前必须提前拦截。
-     */
-    private static final int VOUCHER_RULES_MAX_LENGTH = 1024;
-
-    /**
-     * 单张券面值上限，单位分。学习项目里先控制在 10000 元以内，避免异常输入创建超大面额券。
-     */
-    private static final long MAX_VOUCHER_AMOUNT = 1_000_000L;
-
-    /**
-     * 秒杀库存上限。Agent 场景建议小库存验证，过大库存必须由人工运营系统单独审核。
-     */
-    private static final int MAX_SECKILL_STOCK = 10_000;
-
-    /**
-     * 普通券最长有效期 180 天，秒杀活动最长 7 天，避免 Agent 草稿生成超长周期活动。
-     */
-    private static final int MAX_VOUCHER_DURATION_DAYS = 180;
-    private static final int MAX_SECKILL_DURATION_DAYS = 7;
-
-    /**
-     * 活动开始时间最多允许提前配置到一年内。
-     */
-    private static final int MAX_BEGIN_TIME_AFTER_DAYS = 365;
-
     @Resource
     private ShopAgentTool shopAgentTool;
     @Resource
@@ -169,6 +134,8 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     private MerchantAgentRulePolicyService rulePolicyService;
     @Resource
     private IMerchantAgentMemoryService agentMemoryService;
+    @Resource
+    private MerchantCampaignDraftValidator campaignDraftValidator;
 
     @Override
     public Result queryAgentTools() {
@@ -848,75 +815,8 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
                                                LocalDateTime beginTime,
                                                LocalDateTime endTime,
                                                boolean confirmStage) {
-        if (!"voucher".equals(draftType) && !"seckill".equals(draftType)) {
-            return Result.fail("草稿类型只能是普通代金券或秒杀券");
-        }
-        if (isBlank(title)) {
-            return Result.fail("活动标题不能为空");
-        }
-        if (textLength(title) > DRAFT_TITLE_MAX_LENGTH) {
-            return Result.fail("活动标题不能超过" + DRAFT_TITLE_MAX_LENGTH + "个字符");
-        }
-        if (textLength(subTitle) > DRAFT_SUB_TITLE_MAX_LENGTH) {
-            return Result.fail("活动副标题不能超过" + DRAFT_SUB_TITLE_MAX_LENGTH + "个字符");
-        }
-        if (textLength(rules) > VOUCHER_RULES_MAX_LENGTH) {
-            return Result.fail("活动规则不能超过" + VOUCHER_RULES_MAX_LENGTH + "个字符");
-        }
-        if (confirmStage && payValue == null) {
-            return Result.fail("支付金额不能为空");
-        }
-        if (confirmStage && actualValue == null) {
-            return Result.fail("抵扣金额不能为空");
-        }
-        if (payValue != null && payValue <= 0) {
-            return Result.fail("支付金额必须大于0");
-        }
-        if (actualValue != null && actualValue <= 0) {
-            return Result.fail("抵扣金额必须大于0");
-        }
-        if (payValue != null && payValue > MAX_VOUCHER_AMOUNT) {
-            return Result.fail("支付金额不能超过10000元");
-        }
-        if (actualValue != null && actualValue > MAX_VOUCHER_AMOUNT) {
-            return Result.fail("抵扣金额不能超过10000元");
-        }
-        if (payValue != null && actualValue != null && payValue >= actualValue) {
-            return Result.fail("支付金额必须小于抵扣金额");
-        }
-
-        if ("seckill".equals(draftType) && (stock == null || stock <= 0)) {
-            return Result.fail("秒杀券库存必须大于0");
-        }
-        if ("seckill".equals(draftType) && stock != null && stock > MAX_SECKILL_STOCK) {
-            return Result.fail("秒杀券库存不能超过" + MAX_SECKILL_STOCK + "张");
-        }
-
-        if (beginTime != null && endTime != null && !beginTime.isBefore(endTime)) {
-            return Result.fail("活动开始时间必须早于结束时间");
-        }
-        if (beginTime != null && beginTime.isAfter(LocalDateTime.now().plusDays(MAX_BEGIN_TIME_AFTER_DAYS))) {
-            return Result.fail("活动开始时间不能超过一年后");
-        }
-        if (beginTime != null && endTime != null) {
-            int maxDays = "seckill".equals(draftType) ? MAX_SECKILL_DURATION_DAYS : MAX_VOUCHER_DURATION_DAYS;
-            if (beginTime.plusDays(maxDays).isBefore(endTime)) {
-                return Result.fail(("seckill".equals(draftType) ? "秒杀活动" : "普通代金券") + "有效期不能超过" + maxDays + "天");
-            }
-        }
-        if (confirmStage) {
-            LocalDateTime now = LocalDateTime.now();
-            if (beginTime == null || endTime == null) {
-                return Result.fail("活动开始和结束时间不能为空");
-            }
-            if (!endTime.isAfter(now)) {
-                return Result.fail("活动结束时间必须晚于当前时间");
-            }
-            if ("seckill".equals(draftType) && !beginTime.isAfter(now)) {
-                return Result.fail("秒杀券开始时间必须晚于当前时间");
-            }
-        }
-        return Result.ok();
+        return campaignDraftValidator.validateDraftBusinessFields(draftType, title, subTitle, rules, payValue,
+                actualValue, stock, beginTime, endTime, confirmStage);
     }
 
     private AgentCampaignDraft buildDraftUpdate(AgentCampaignDraft draft, MerchantCampaignDraftRequest request) {

@@ -8,11 +8,13 @@ import com.hmdp.service.IMerchantAgentActionLogService;
 import com.hmdp.service.IMerchantAgentSuggestionService;
 import com.hmdp.service.IMerchantCampaignDraftService;
 import com.hmdp.service.IMerchantService;
+import com.hmdp.service.MerchantCampaignDraftValidator;
 import com.hmdp.tool.VoucherAgentTool;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.LocalDateTime;
@@ -45,6 +47,8 @@ class MerchantCampaignDraftValidationTest {
     private IMerchantAgentSuggestionService agentSuggestionService;
     @Mock
     private IMerchantAgentActionLogService agentActionLogService;
+    @Spy
+    private MerchantCampaignDraftValidator campaignDraftValidator = new MerchantCampaignDraftValidator();
 
     @Test
     void shouldRejectTooLongTitleOnUpdate() {
