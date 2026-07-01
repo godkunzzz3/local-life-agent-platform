@@ -83,4 +83,11 @@ public interface IMerchantAgentKnowledgeDocService extends IService<AgentKnowled
      * 这个方法已经融合了向量相似度和关键词兜底，后续可以继续扩展重排序。</p>
      */
     List<Map<String, Object>> retrieveForAgent(String intent, String userMessage, Integer limit);
+
+    /**
+     * Agent 内部商家隔离 RAG 检索入口。
+     *
+     * <p>只允许召回当前店铺私有知识和公共知识，禁止召回其他店铺私有知识。</p>
+     */
+    List<Map<String, Object>> retrieveForAgentForShop(Long shopId, String intent, String userMessage, Integer limit);
 }

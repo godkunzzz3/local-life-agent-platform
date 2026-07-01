@@ -71,6 +71,7 @@ public class MerchantAgentKnowledgeDocServiceImpl
 
         AgentKnowledgeDoc doc = new AgentKnowledgeDoc()
                 .setId(redisIdWorker.nextId("agent"))
+                .setShopId(request.getShopId())
                 .setTitle(request.getTitle().trim())
                 .setCategory(request.getCategory().trim())
                 .setContent(request.getContent().trim())
@@ -94,6 +95,9 @@ public class MerchantAgentKnowledgeDocServiceImpl
         }
 
         AgentKnowledgeDoc updateDoc = new AgentKnowledgeDoc().setId(docId);
+        if (request.getShopId() != null) {
+            updateDoc.setShopId(request.getShopId());
+        }
         if (!isBlank(request.getTitle())) {
             updateDoc.setTitle(request.getTitle().trim());
         }
@@ -357,6 +361,18 @@ public class MerchantAgentKnowledgeDocServiceImpl
 
     @Override
     public List<Map<String, Object>> retrieveForAgent(String intent, String userMessage, Integer limit) {
+        return retrieveForAgentScoped(null, intent, userMessage, limit);
+    }
+
+    @Override
+    public List<Map<String, Object>> retrieveForAgentForShop(Long shopId, String intent, String userMessage, Integer limit) {
+        if (shopId == null || isBlank(userMessage)) {
+            return new ArrayList<>();
+        }
+        return retrieveForAgentScoped(shopId, intent, userMessage, limit);
+    }
+
+    private List<Map<String, Object>> retrieveForAgentScoped(Long shopId, String intent, String userMessage, Integer limit) {
         // Agent 内部默认只取 Top3，避免把太多知识片段塞进 Prompt 导致成本和噪音上升。
         int safeLimit = limit == null || limit <= 0 ? 3 : Math.min(limit, 8);
 
@@ -365,13 +381,13 @@ public class MerchantAgentKnowledgeDocServiceImpl
         List<String> categories = resolveCategoriesForRetrieval(intent, userMessage);
 
         // 第一优先级：语义向量检索。向量先粗召回，再用规则版 Rerank 精排 TopK。
-        List<Map<String, Object>> vectorHits = retrieveByVector(categories, userMessage, safeLimit);
+        List<Map<String, Object>> vectorHits = retrieveByVector(shopId, categories, userMessage, safeLimit);
         if (!vectorHits.isEmpty()) {
-            return vectorHits;
+            return filterRowsForShopScope(vectorHits, shopId);
         }
 
         // 兜底策略：如果向量检索不可用，就回到关键词检索，保证 Agent 主流程仍然可用。
-        return retrieveByKeyword(categories, userMessage, intent, safeLimit);
+        return filterRowsForShopScope(retrieveByKeyword(shopId, categories, userMessage, intent, safeLimit), shopId);
     }
 
     /**
@@ -384,7 +400,7 @@ public class MerchantAgentKnowledgeDocServiceImpl
      * 4. 用规则版 Rerank 结合分类、标题、正文关键词重新排序；
      * 5. 把相似度和 rerank 分数返回给前端，方便观察排序依据。</p>
      */
-    private List<Map<String, Object>> retrieveByVector(List<String> categories, String userMessage, int safeLimit) {
+    private List<Map<String, Object>> retrieveByVector(Long shopId, List<String> categories, String userMessage, int safeLimit) {
         // 1. 把商家输入的问题向量化，例如“帮我设计周末秒杀券” -> queryVector。
         List<Float> queryVector = embeddingService.embedQuery(userMessage);
         if (queryVector == null || queryVector.isEmpty()) {
@@ -395,6 +411,7 @@ public class MerchantAgentKnowledgeDocServiceImpl
         // 学习项目数据量小，可以直接 Java 内存算；生产大规模场景应交给向量数据库做 ANN 检索。
         List<AgentKnowledgeDoc> candidates = query()
                 .eq("status", 1)
+                .and(shopId != null, wrapper -> wrapper.isNull("shop_id").or().eq("shop_id", shopId))
                 .in(hasCategories(categories), "category", categories)
                 .isNotNull("vector_id")
                 .orderByDesc("update_time")
@@ -445,7 +462,7 @@ public class MerchantAgentKnowledgeDocServiceImpl
      * <p>当 API Key 未配置、Embedding 服务异常、Redis 中还没有向量时，RAG 不能阻断 Agent 主流程。
      * 所以这里保留原来的 MySQL like 检索，保证学习项目在没有向量库时也能运行。</p>
      */
-    private List<Map<String, Object>> retrieveByKeyword(List<String> categories, String userMessage, String intent, int safeLimit) {
+    private List<Map<String, Object>> retrieveByKeyword(Long shopId, List<String> categories, String userMessage, String intent, int safeLimit) {
         // 关键词由简单规则提取，例如“秒杀/周末” -> “秒杀”，“评价/口碑” -> “评价”。
         String keyword = resolveKeyword(userMessage, intent);
         if (isBlank(keyword) && !isStrongBusinessIntent(intent)) {
@@ -456,6 +473,7 @@ public class MerchantAgentKnowledgeDocServiceImpl
         int candidateLimit = Math.max(safeLimit * 4, safeLimit);
         List<AgentKnowledgeDoc> docs = query()
                 .eq("status", 1)
+                .and(shopId != null, wrapper -> wrapper.isNull("shop_id").or().eq("shop_id", shopId))
                 .in(hasCategories(categories), "category", categories)
                 .and(!isBlank(keyword), wrapper -> wrapper
                         .like("title", keyword)
@@ -470,6 +488,7 @@ public class MerchantAgentKnowledgeDocServiceImpl
             // 这样至少能给 Agent 一些行业规则背景，而不是完全没有 RAG 内容。
             docs = query()
                     .eq("status", 1)
+                    .and(shopId != null, wrapper -> wrapper.isNull("shop_id").or().eq("shop_id", shopId))
                     .in("category", categories)
                     .orderByDesc("update_time")
                     .last("LIMIT " + candidateLimit)
@@ -734,6 +753,7 @@ public class MerchantAgentKnowledgeDocServiceImpl
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("id", doc.getId());
         row.put("docId", String.valueOf(doc.getId()));
+        row.put("shopId", doc.getShopId());
         row.put("title", doc.getTitle());
         row.put("category", doc.getCategory());
         row.put("categoryName", resolveCategoryName(doc.getCategory()));
@@ -744,6 +764,44 @@ public class MerchantAgentKnowledgeDocServiceImpl
         row.put("createTime", doc.getCreateTime());
         row.put("updateTime", doc.getUpdateTime());
         return row;
+    }
+
+    /**
+     * 应用层最终兜底过滤。
+     *
+     * <p>当前向量召回先从 MySQL 读候选文档再到 Redis 取向量，因此查询阶段已经能按 shop_id
+     * 过滤。这里再做一次最终结果过滤，防止未来替换为向量索引时缺少 metadata filter 导致其他
+     * 商家的私有 chunk 泄漏。安全优先于召回率：过滤后为空就返回 noReliableHit。</p>
+     */
+    List<Map<String, Object>> filterRowsForShopScope(List<Map<String, Object>> rows, Long shopId) {
+        if (shopId == null || rows == null || rows.isEmpty()) {
+            return rows == null ? new ArrayList<>() : rows;
+        }
+        List<Map<String, Object>> filtered = new ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            if (isRowVisibleToShop(row, shopId)) {
+                filtered.add(row);
+            }
+        }
+        return filtered;
+    }
+
+    boolean isRowVisibleToShop(Map<String, Object> row, Long shopId) {
+        if (row == null || shopId == null) {
+            return false;
+        }
+        Object rowShopId = row.get("shopId");
+        if (rowShopId == null) {
+            return true;
+        }
+        if (rowShopId instanceof Number) {
+            return shopId.equals(((Number) rowShopId).longValue());
+        }
+        try {
+            return shopId.equals(Long.valueOf(String.valueOf(rowShopId)));
+        } catch (NumberFormatException e) {
+            return false;
+        }
     }
 
     private String resolveCategoryName(String category) {

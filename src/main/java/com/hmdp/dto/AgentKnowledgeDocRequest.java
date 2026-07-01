@@ -12,6 +12,11 @@ import lombok.Data;
 public class AgentKnowledgeDocRequest {
 
     /**
+     * 店铺ID。为空表示公共知识；非空表示店铺私有知识。
+     */
+    private Long shopId;
+
+    /**
      * 知识标题，例如“周末秒杀券设计规则”。
      */
     private String title;

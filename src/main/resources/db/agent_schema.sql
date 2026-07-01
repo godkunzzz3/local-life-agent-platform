@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS `tb_agent_action_log` (
 -- ----------------------------
 CREATE TABLE IF NOT EXISTS `tb_agent_knowledge_doc` (
   `id` bigint(20) UNSIGNED NOT NULL COMMENT '主键，建议使用 RedisIdWorker 生成',
+  `shop_id` bigint(20) UNSIGNED DEFAULT NULL COMMENT '店铺ID，NULL表示全局公共知识，非空表示店铺私有知识',
   `title` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '标题',
   `category` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '分类：voucher_rule / seckill_rule / industry_case / risk_rule / cost_rule',
   `content` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '知识正文',
@@ -131,6 +132,7 @@ CREATE TABLE IF NOT EXISTS `tb_agent_knowledge_doc` (
   `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_agent_knowledge_shop_status_category`(`shop_id`, `status`, `category`) USING BTREE,
   INDEX `idx_category_status_time`(`category`, `status`, `update_time`) USING BTREE,
   INDEX `idx_status_time`(`status`, `update_time`) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '商家运营Agent知识库文档表' ROW_FORMAT = Dynamic;

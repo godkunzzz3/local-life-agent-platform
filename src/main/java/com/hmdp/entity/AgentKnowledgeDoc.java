@@ -32,6 +32,11 @@ public class AgentKnowledgeDoc implements Serializable {
     private Long id;
 
     /**
+     * 店铺ID。为空表示全局公共知识；非空表示该店铺私有知识。
+     */
+    private Long shopId;
+
+    /**
      * 知识标题，例如“秒杀券库存控制规则”。
      */
     private String title;
