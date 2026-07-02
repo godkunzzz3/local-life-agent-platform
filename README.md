@@ -81,6 +81,37 @@ http://localhost:8080/merchant-agent.html
 - 前端工作台提供正式 Memory 管理入口；Workflow 记录 `MEMORY_LOAD`，但不保存完整敏感内容。
 - 第一版通过规则生成候选记忆，候选不会直接进入 Prompt，只有商家编辑并确认后才写入正式 Memory。
 
+## Agent Skill Layer
+
+项目在 Tool Calling、Workflow、Agent Eval 和 Human-in-the-loop 机制之上增加了一层轻量级 Agent Skill 编排：
+
+- Tool 是原子业务能力，例如店铺档案、订单统计、优惠券分析、评价摘要和草稿生成。
+- Skill 是面向业务目标的编排单元，负责组合 Tool、RAG、规则校验、输出结构和人工确认策略。
+- Workflow 负责记录 Skill 执行过程，支撑执行回放、评测和失败定位。
+- 高风险写操作必须进入草稿和商家确认流程，不能由模型直接修改业务数据。
+
+| Skill | 目标 | 关键能力 | 安全边界 |
+| --- | --- | --- | --- |
+| `MerchantDiagnosisSkill` | 商家运营诊断 | 编排商家画像、订单统计、优惠券分析、评价摘要等只读工具 | 只读，`riskLevel=LOW`，不触发写操作 |
+| `KnowledgeQaSkill` | 商家知识库问答 | 基于 `shop_id` 隔离 RAG 检索，支持 `noReliableHit` 低置信兜底 | 只召回当前商家私有知识和公共知识，不跨商家返回 `retrievedChunks` |
+| `CouponDraftSkill` | 优惠券策略草稿生成 | 生成待确认活动草稿，复用草稿校验和高危规则 | `riskLevel=HIGH`，`needHumanConfirm=true`，不创建真实券 |
+
+安全设计：
+
+- Skill 默认 `modelCallable=false`，不直接暴露给模型自由调用。
+- 只读工具通过 Tool Registry 白名单控制。
+- `voucher_campaign_tool` 不进入模型可调用列表。
+- `CouponDraftSkill` 只调用 `MerchantCampaignDraftSkillService.createDraftFromSkill`。
+- 禁止调用 `confirmCampaignDraft` / `createVoucherFromDraft`。
+- 知识库 RAG 使用 `shop_id` 隔离，商家级检索只返回 `shop_id=当前 shopId` 或 `shop_id IS NULL` 的公共知识。
+
+测试结果：
+
+- 全量测试通过：`Tests run: 128, Failures: 0, Errors: 0, Skipped: 0`。
+- 覆盖 Skill、Knowledge、Draft、Campaign、Tool Registry Security、Readonly Tool Executor Security 等测试。
+
+详细设计见 [docs/AGENT_SKILL_LAYER.md](docs/AGENT_SKILL_LAYER.md)。
+
 ## 项目截图
 
 ### 用户端店铺详情与优惠券
